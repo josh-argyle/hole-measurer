@@ -27,6 +27,9 @@ class MeasurementGUI:
         self.current_image_path = None
         self.result_image = None
 
+        # Convex hull mode
+        self.use_convex_hull = tk.BooleanVar(value=False)
+
         # Setup UI
         self.setup_ui()
 
@@ -72,6 +75,17 @@ class MeasurementGUI:
             fg="#7f8c8d"
         )
         self.status_label.pack(side=tk.LEFT, padx=20)
+
+        # Convex hull checkbox
+        self.convex_hull_check = tk.Checkbutton(
+            control_frame,
+            text="Convex Hull (for hollow objects)",
+            variable=self.use_convex_hull,
+            font=("Arial", 10),
+            bg="#ecf0f1",
+            activebackground="#ecf0f1"
+        )
+        self.convex_hull_check.pack(side=tk.LEFT, padx=10)
 
         # Progress bar
         self.progress = ttk.Progressbar(
@@ -174,7 +188,7 @@ class MeasurementGUI:
 
             # Measure object
             measurer = ObjectMeasurer(frame)
-            results = measurer.measure_object(warped, debug=False)
+            results = measurer.measure_object(warped, debug=False, use_convex_hull=self.use_convex_hull.get())
 
             if "error" in results:
                 raise ValueError(results["error"])

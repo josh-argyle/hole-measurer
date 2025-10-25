@@ -568,7 +568,7 @@ class ObjectMeasurer:
             'extent': extent
         }
 
-    def measure_object(self, warped_image, threshold=200, debug=False):
+    def measure_object(self, warped_image, threshold=200, debug=False, use_convex_hull=False):
         """
         Measure the object in the calibrated image using adaptive multi-threshold segmentation
 
@@ -576,6 +576,7 @@ class ObjectMeasurer:
             warped_image: Calibrated/warped image
             threshold: Base threshold (used as fallback, but multi-threshold is primary)
             debug: Show debug visualizations
+            use_convex_hull: If True, compute convex hull of all detected parts (for hollow objects)
 
         Returns:
             Dictionary with measurements
@@ -625,11 +626,29 @@ class ObjectMeasurer:
         if len(all_candidates) == 0:
             return {"error": "No object detected at any threshold (tried 170-245)"}
 
-        # Select the best-scoring contour
-        best_candidate = max(all_candidates, key=lambda x: x['score'])
-        object_contour = best_candidate['contour']
+        # CONVEX HULL MODE: For objects with large hollow interiors (e.g., pliers, scissors)
+        if use_convex_hull and len(all_candidates) >= 2:
+            # Combine all candidate contours and compute convex hull
+            all_points = []
+            for candidate in all_candidates:
+                all_points.extend(candidate['contour'].reshape(-1, 2))
 
-        if debug:
+            all_points = np.array(all_points, dtype=np.float32)
+            # Reshape for convexHull and ensure correct shape for drawContours
+            hull = cv2.convexHull(all_points)
+            object_contour = hull.reshape((-1, 1, 2)).astype(np.int32)
+
+            if debug:
+                print(f"\n  Convex Hull Mode: Combined {len(all_candidates)} parts into single hull")
+                hull_area = cv2.contourArea(object_contour)
+                x, y, cw, ch = cv2.boundingRect(object_contour)
+                print(f"  Hull: area={hull_area:.0f}px², bbox={cw/10:.1f}x{ch/10:.1f}mm")
+        else:
+            # Standard mode: Select the best-scoring contour
+            best_candidate = max(all_candidates, key=lambda x: x['score'])
+            object_contour = best_candidate['contour']
+
+        if debug and not use_convex_hull:
             print(f"\nAdaptive Segmentation Results:")
             print(f"  Tried {len(thresholds_to_try)} thresholds, found {len(all_candidates)} candidates")
             print(f"  Best: threshold={best_candidate['threshold']}, score={best_candidate['score']:.3f}")
@@ -645,10 +664,10 @@ class ObjectMeasurer:
                 print(f"  #{i+1}: thresh={cand['threshold']}, score={cand['score']:.3f}, "
                       f"area={cand['area']:.0f}px²")
 
-        # Warn if best score is low
-        if best_candidate['score'] < 0.3:
-            print(f"  ! Warning: Low confidence detection (score={best_candidate['score']:.2f})")
-            print(f"    Object may not be clearly visible or might need better lighting")
+            # Warn if best score is low
+            if best_candidate['score'] < 0.3:
+                print(f"  ! Warning: Low confidence detection (score={best_candidate['score']:.2f})")
+                print(f"    Object may not be clearly visible or might need better lighting")
         
         # Calculate measurements in pixels
         perimeter_pixels = cv2.arcLength(object_contour, closed=True)
@@ -687,8 +706,10 @@ def main():
     parser = argparse.ArgumentParser(description='Measure objects using calibration frame')
     parser.add_argument('image', help='Path to image file')
     parser.add_argument('--debug', action='store_true', help='Show debug visualizations')
-    parser.add_argument('--threshold', type=int, default=200, 
+    parser.add_argument('--threshold', type=int, default=200,
                        help='Segmentation threshold (default: 200, lower for darker objects)')
+    parser.add_argument('--convex-hull', action='store_true',
+                       help='Use convex hull mode for objects with hollow interiors (pliers, scissors, etc.)')
     parser.add_argument('--save-output', help='Save annotated output image to this path')
     
     args = parser.parse_args()
@@ -720,7 +741,8 @@ def main():
     # Measure object
     print("\nMeasuring object...")
     measurer = ObjectMeasurer(frame)
-    measurements = measurer.measure_object(warped, threshold=args.threshold, debug=args.debug)
+    measurements = measurer.measure_object(warped, threshold=args.threshold,
+                                          debug=args.debug, use_convex_hull=args.convex_hull)
     
     if "error" in measurements:
         print(f"Error: {measurements['error']}")

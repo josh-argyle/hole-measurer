@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual Environment
+venv/
+env/
+ENV/
+
+# Test and debug files
+test_*.py
+debug_*.py
+check_*.py
+
+# Output images (temporary results)
+*_result.png
+*_debug.png
+*_test.png
+warped_*.png
+binary_*.png
+corner_detection_debug.png
+result.png
+result2.png
+result3.png
+success.png
+corrected_result.png
+final_result.png
+test-output.png
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+nul

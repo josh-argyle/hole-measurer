@@ -295,6 +295,63 @@ class ObjectMeasurer:
             'extent': extent
         }
 
+    def _refine_contour_halfmax(self, warped_image, contour):
+        """
+        Re-extract the object contour at the half-maximum intensity between
+        the object's own gray level and the local background level.
+
+        A fixed threshold places the edge somewhere inside the blur halo
+        around the object, biasing every dimension outward by a fraction of
+        the blur width. The 50% crossing point of a blurred step edge is at
+        the true edge position, so thresholding at the midpoint between
+        object and background intensity removes that bias.
+
+        Returns the refined contour, or the original if refinement fails.
+        """
+        gray = cv2.cvtColor(warped_image, cv2.COLOR_BGR2GRAY)
+
+        mask = np.zeros_like(gray)
+        cv2.drawContours(mask, [contour], -1, 255, -1)
+
+        # Sample the object interior and a nearby background ring, staying
+        # clear of the blurred edge itself
+        interior = cv2.erode(mask, np.ones((9, 9), np.uint8))
+        near = cv2.dilate(mask, np.ones((9, 9), np.uint8))
+        far = cv2.dilate(mask, np.ones((41, 41), np.uint8))
+        background_ring = (far > 0) & (near == 0)
+
+        if interior.sum() == 0 or background_ring.sum() == 0:
+            return contour
+
+        obj_level = float(np.median(gray[interior > 0]))
+        bg_level = float(np.median(gray[background_ring]))
+        if bg_level - obj_level < 20:  # too little contrast to trust
+            return contour
+
+        mid = (obj_level + bg_level) / 2.0
+        _, binary = cv2.threshold(gray, mid, 255, cv2.THRESH_BINARY_INV)
+        # Only consider the neighbourhood of the original detection
+        binary[far == 0] = 0
+
+        kernel = np.ones((5, 5), np.uint8)
+        binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel)
+        binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
+
+        contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            return contour
+
+        # Pick the refined contour that best overlaps the original
+        best, best_overlap = contour, 0
+        for c in contours:
+            m = np.zeros_like(gray)
+            cv2.drawContours(m, [c], -1, 255, -1)
+            overlap = int(np.count_nonzero((m > 0) & (mask > 0)))
+            if overlap > best_overlap:
+                best, best_overlap = c, overlap
+
+        return best if best_overlap > 0 else contour
+
     def measure_object(self, warped_image, threshold=200, debug=False, use_convex_hull=False):
         """
         Measure the object in the calibrated image using adaptive multi-threshold segmentation
@@ -364,7 +421,8 @@ class ObjectMeasurer:
                 print(f"\n  Convex Hull Mode: Combined {len(all_candidates)} parts into single hull")
         else:
             best_candidate = max(all_candidates, key=lambda x: x['score'])
-            object_contour = best_candidate['contour']
+            object_contour = self._refine_contour_halfmax(warped_image,
+                                                          best_candidate['contour'])
 
         if debug and not use_convex_hull:
             print(f"\nAdaptive Segmentation Results:")

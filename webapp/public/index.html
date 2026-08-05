@@ -285,16 +285,16 @@
         <div class="opt" style="grid-column: 1 / -1">
           <div class="range-label">
             <label for="opt-smooth">Outline smoothing</label>
-            <output id="smooth-val" for="opt-smooth">2.5</output>
+            <output id="smooth-val" for="opt-smooth">5</output>
           </div>
-          <input type="range" id="opt-smooth" min="0" max="8" step="0.5" value="2.5">
+          <input type="range" id="opt-smooth" min="0" max="10" step="1" value="5">
         </div>
         <div class="opt" style="grid-column: 1 / -1">
           <div class="range-label">
             <label for="opt-shadow">Shadow cut</label>
-            <output id="shadow-val" for="opt-shadow">0</output>
+            <output id="shadow-val" for="opt-shadow">auto</output>
           </div>
-          <input type="range" id="opt-shadow" min="0" max="80" step="5" value="0">
+          <input type="range" id="opt-shadow" min="0" max="10" step="1" value="0">
         </div>
         <div class="opt-check">
           <input type="checkbox" id="opt-hull">
@@ -332,20 +332,27 @@
   // Smoothing slider: show the value live, re-measure the current photo
   // when the user releases it
   let lastFile = null;
+
+  // Both sliders use 0-10 steps mapped so every step is a visible change.
+  // Smoothing: 0 = off, then strength grows geometrically 1.0 -> ~10.7.
+  // Shadow cut: 0 = auto, then the contrast floor starts just above the
+  // automatic minimum (~14) and climbs to a hard 78.
+  const smoothStrength = n => n === 0 ? 0 : 1.0 * Math.pow(1.3, n - 1);
+  const shadowFloor = n => n === 0 ? 0 : 15 + (n - 1) * 7;
+
   const smoothSlider = document.getElementById('opt-smooth');
   const smoothVal = document.getElementById('smooth-val');
   smoothSlider.addEventListener('input', () => {
-    smoothVal.textContent = parseFloat(smoothSlider.value).toFixed(1);
+    smoothVal.textContent = smoothSlider.value === '0' ? 'off' : smoothSlider.value;
   });
   smoothSlider.addEventListener('change', () => {
     if (lastFile) measure(lastFile);
   });
 
-  // Shadow-cut slider: minimum contrast from background to count as object
   const shadowSlider = document.getElementById('opt-shadow');
   const shadowVal = document.getElementById('shadow-val');
   shadowSlider.addEventListener('input', () => {
-    shadowVal.textContent = shadowSlider.value;
+    shadowVal.textContent = shadowSlider.value === '0' ? 'auto' : shadowSlider.value;
   });
   shadowSlider.addEventListener('change', () => {
     if (lastFile) measure(lastFile);
@@ -380,8 +387,8 @@
     form.append('width', document.getElementById('opt-width').value);
     form.append('height', document.getElementById('opt-height').value);
     form.append('convexHull', document.getElementById('opt-hull').checked);
-    form.append('smooth', smoothSlider.value);
-    form.append('minContrast', shadowSlider.value);
+    form.append('smooth', smoothStrength(parseInt(smoothSlider.value)).toFixed(2));
+    form.append('minContrast', String(shadowFloor(parseInt(shadowSlider.value))));
 
     try {
       const resp = await fetch('/api/measure', { method: 'POST', body: form });

@@ -392,6 +392,60 @@ class ObjectMeasurer:
 
         return best
 
+    def _extend_with_edges(self, edges, contour, image_shape):
+        """
+        Reattach faint thin parts (e.g. tweezer tips) that thresholding
+        missed. Such parts are too close to the background level to
+        segment, but their outlines still show in the Canny edge map.
+        Take edge pixels connected to the object and merge them in.
+
+        Returns the extended contour, or the original if nothing to add.
+        """
+        h, w = image_shape[:2]
+        mask = np.zeros((h, w), dtype=np.uint8)
+        cv2.drawContours(mask, [contour], -1, 255, -1)
+
+        k3 = np.ones((3, 3), np.uint8)
+        combined = cv2.bitwise_or(mask, cv2.dilate(edges, k3))
+
+        # Keep only the connected component(s) touching the object
+        n, labels = cv2.connectedComponents(combined)
+        object_labels = np.unique(labels[mask > 0])
+        keep = np.isin(labels, object_labels[object_labels != 0])
+        extended = np.where(keep, np.uint8(255), np.uint8(0))
+
+        # Every object's own boundary contributes a thin ring of edge pixels
+        # just outside the mask - merging that in would inflate all
+        # measurements. A genuine missed part (a tweezer tip) reaches far
+        # beyond the boundary. Keep only added components that extend well
+        # away from the original mask.
+        added = cv2.bitwise_and(extended, cv2.bitwise_not(mask))
+        dist_outside = cv2.distanceTransform(cv2.bitwise_not(mask), cv2.DIST_L2, 5)
+        n_add, add_labels = cv2.connectedComponents(added)
+        result = mask.copy()
+        for label in range(1, n_add):
+            comp = add_labels == label
+            if dist_outside[comp].max() > 10:  # reaches >1mm beyond boundary
+                result[comp] = 255
+
+        if np.array_equal(result, mask):
+            return contour
+
+        result = cv2.morphologyEx(result, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
+
+        contours, _ = cv2.findContours(result, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            return contour
+        best = max(contours, key=cv2.contourArea)
+
+        # Guard: thin extensions barely change area. A big jump means the
+        # edge map bridged to something else - keep the original.
+        orig_area = max(cv2.contourArea(contour), 1)
+        if cv2.contourArea(best) / orig_area > 1.5:
+            return contour
+
+        return best
+
     def measure_object(self, warped_image, threshold=200, debug=False, use_convex_hull=False):
         """
         Measure the object in the calibrated image using adaptive multi-threshold segmentation
@@ -483,6 +537,8 @@ class ObjectMeasurer:
             best_candidate = max(all_candidates, key=lambda x: x['score'])
             object_contour = self._refine_contour_halfmax(warped_image,
                                                           best_candidate['contour'])
+            object_contour = self._extend_with_edges(edges, object_contour,
+                                                     warped_image.shape)
 
         if debug and not use_convex_hull:
             print(f"\nAdaptive Segmentation Results:")

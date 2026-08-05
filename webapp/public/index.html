@@ -341,12 +341,12 @@
   // when the user releases it
   let lastFile = null;
 
-  // Both sliders use 0-10 steps mapped so every step is a visible change.
-  // Smoothing: 0 = off, then strength grows geometrically 1.0 -> ~10.7.
-  // Shadow cut: 0 = auto, then the contrast floor starts just above the
-  // automatic minimum (~14) and climbs to a hard 78.
-  const smoothStrength = n => n === 0 ? 0 : 1.0 * Math.pow(1.3, n - 1);
-  const shadowFloor = n => n === 0 ? 0 : 15 + (n - 1) * 7;
+  // Both sliders use 0-10 steps mapped so every step is a visible change,
+  // with deliberate headroom at the top - max is past the useful range.
+  // Smoothing: 0 = off, then strength grows geometrically 1.0 -> 15.
+  // Shadow cut: 0 = auto, then the contrast floor climbs 15 -> 120.
+  const smoothStrength = n => n === 0 ? 0 : Math.pow(15, (n - 1) / 9);
+  const shadowFloor = n => n === 0 ? 0 : Math.round(15 + (n - 1) * 105 / 9);
 
   const smoothSlider = document.getElementById('opt-smooth');
   const smoothVal = document.getElementById('smooth-val');

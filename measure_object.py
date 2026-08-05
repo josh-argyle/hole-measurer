@@ -550,6 +550,52 @@ class ObjectMeasurer:
 
         return best
 
+    def _smooth_contour(self, contour, sigma=2.5, epsilon=2.0):
+        """
+        Smooth a contour so straight edges draw straight.
+
+        Two stages: a circular Gaussian filter along the contour removes
+        pixel-level jaggies from thresholding, then Douglas-Peucker
+        simplification collapses near-straight runs into single segments
+        while preserving genuine corners and curves.
+
+        Also makes the perimeter honest - stair-stepped pixel edges
+        inflate arc length by several percent.
+        """
+        pts = contour.reshape(-1, 2).astype(np.float64)
+        if len(pts) < 12:
+            return contour
+
+        # Resample to uniform 1px spacing along the closed loop - contour
+        # vertices are unevenly spaced (straight runs keep only endpoints),
+        # and Gaussian filtering assumes uniform samples
+        closed = np.vstack([pts, pts[:1]])
+        seglen = np.linalg.norm(np.diff(closed, axis=0), axis=1)
+        arclen = np.concatenate([[0], np.cumsum(seglen)])
+        total = arclen[-1]
+        if total < 12:
+            return contour
+        s = np.arange(0, total, 1.0)
+        pts = np.stack([np.interp(s, arclen, closed[:, 0]),
+                        np.interp(s, arclen, closed[:, 1])], axis=1)
+        n = len(pts)
+
+        ksize = max(3, int(sigma * 6) | 1)
+        half = ksize // 2
+        kernel = np.exp(-0.5 * ((np.arange(ksize) - half) / sigma) ** 2)
+        kernel /= kernel.sum()
+
+        # Wrap-around padding: the contour is a closed loop
+        ext = np.vstack([pts[-half:], pts, pts[:half]])
+        xs = np.convolve(ext[:, 0], kernel, mode='valid')
+        ys = np.convolve(ext[:, 1], kernel, mode='valid')
+        smooth = np.stack([xs, ys], axis=1).astype(np.float32)
+
+        approx = cv2.approxPolyDP(smooth.reshape(-1, 1, 2), epsilon, True)
+        if len(approx) < 3:
+            return contour
+        return approx.astype(np.int32)
+
     def measure_object(self, warped_image, threshold=200, debug=False, use_convex_hull=False):
         """
         Measure the object in the calibrated image using adaptive multi-threshold segmentation
@@ -644,6 +690,7 @@ class ObjectMeasurer:
                                                           best_candidate['contour'])
             object_contour = self._extend_with_edges(edges, object_contour,
                                                      warped_image.shape)
+            object_contour = self._smooth_contour(object_contour)
 
         if debug and not use_convex_hull:
             print(f"\nAdaptive Segmentation Results:")

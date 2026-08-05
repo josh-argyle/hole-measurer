@@ -23,20 +23,25 @@ OUTPUT_DIR = Path(__file__).resolve().parent / "output"
 # if it differs.
 DEFAULT_INNER_WIDTH_MM = 150.0
 DEFAULT_INNER_HEIGHT_MM = 150.0
+DEFAULT_BORDER_MM = 10.0
 
 
 class CalibrationFrame:
     """Detects the black frame's inner window and calibrates the view"""
 
     def __init__(self, inner_width_mm=DEFAULT_INNER_WIDTH_MM,
-                 inner_height_mm=DEFAULT_INNER_HEIGHT_MM):
+                 inner_height_mm=DEFAULT_INNER_HEIGHT_MM,
+                 border_mm=DEFAULT_BORDER_MM):
         """
         Args:
             inner_width_mm: Width of the frame's inner opening (mm)
             inner_height_mm: Height of the frame's inner opening (mm)
+            border_mm: Width of the black border (used by the outer-edge
+                calibration fallback when the inner window is obstructed)
         """
         self.inner_width_mm = inner_width_mm
         self.inner_height_mm = inner_height_mm
+        self.border_mm = border_mm
         self.homography_matrix = None
         self.mm_per_pixel = None
 
@@ -167,25 +172,101 @@ class CalibrationFrame:
 
         return corners
 
+    def detect_outer_edge(self, image, debug=False):
+        """
+        Fallback: find the OUTER edge of the black frame band. Works when
+        the inner window is obstructed (object/paper overlapping the inner
+        edge, reflections bridging inside to outside), as long as the frame
+        contrasts with the surface it sits on.
+
+        Returns:
+            (4, 2) float32 array of outer corners ordered TL, TR, BR, BL
+        """
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+        # The frame is near-black; threshold well below the general scene
+        # brightness so mid-tone surfaces (cardboard, wood) stay excluded
+        p5, p95 = np.percentile(gray, [5, 95])
+        _, dark = cv2.threshold(gray, p5 + 0.25 * (p95 - p5), 255, cv2.THRESH_BINARY_INV)
+        # Seal small bright streaks (glossy print reflections)
+        dark = cv2.morphologyEx(dark, cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8))
+
+        contours, hierarchy = cv2.findContours(dark, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            raise ValueError("No dark regions found - is the frame in the image?")
+
+        h, w = gray.shape
+        image_area = h * w
+
+        # The frame band is a large dark region that encloses a large hole
+        # (the window) and does not touch the image border
+        best, best_hole = None, 0
+        for i, (c, hier) in enumerate(zip(contours, hierarchy[0])):
+            if hier[3] != -1:
+                continue
+            x, y, cw, ch = cv2.boundingRect(c)
+            if x <= 1 or y <= 1 or x + cw >= w - 1 or y + ch >= h - 1:
+                continue
+            if cv2.contourArea(c) < 0.05 * image_area:
+                continue
+            hole_area = 0
+            child = hier[2]
+            while child != -1:
+                hole_area = max(hole_area, cv2.contourArea(contours[child]))
+                child = hierarchy[0][child][0]
+            if hole_area > best_hole:
+                best, best_hole = c, hole_area
+
+        if best is None or best_hole < 0.05 * image_area:
+            raise ValueError("Could not find the frame band - the black frame "
+                             "must be fully in view and contrast with the surface")
+
+        peri = cv2.arcLength(best, True)
+        approx = cv2.approxPolyDP(best, 0.02 * peri, True)
+        if len(approx) != 4:
+            approx = cv2.boxPoints(cv2.minAreaRect(best))
+
+        rough = self._order_corners(np.array(approx, dtype=np.float32))
+        corners = self._corners_from_edge_lines(best, rough)
+
+        if debug:
+            print(f"Outer frame corners (TL, TR, BR, BL): {corners.tolist()}")
+
+        return corners
+
     def calibrate(self, image, debug=False):
         """
-        Detect the frame window and compute the pixel->mm homography.
+        Detect the frame and compute the pixel->mm homography.
+
+        Tries the inner window first; falls back to the frame's outer edge
+        if the window can't be found cleanly.
 
         Returns:
             True if calibration succeeded, False otherwise
         """
+        b = self.border_mm
         try:
             corners = self.detect_inner_window(image, debug=debug)
-        except ValueError as e:
-            print(f"Error: {e}")
-            return False
-
-        known = np.array([
-            [0, 0],
-            [self.inner_width_mm, 0],
-            [self.inner_width_mm, self.inner_height_mm],
-            [0, self.inner_height_mm],
-        ], dtype=np.float32)
+            known = np.array([
+                [0, 0],
+                [self.inner_width_mm, 0],
+                [self.inner_width_mm, self.inner_height_mm],
+                [0, self.inner_height_mm],
+            ], dtype=np.float32)
+        except ValueError as inner_err:
+            try:
+                corners = self.detect_outer_edge(image, debug=debug)
+                print("Note: inner window not usable "
+                      f"({inner_err}); calibrated from the frame's outer edge")
+                known = np.array([
+                    [-b, -b],
+                    [self.inner_width_mm + b, -b],
+                    [self.inner_width_mm + b, self.inner_height_mm + b],
+                    [-b, self.inner_height_mm + b],
+                ], dtype=np.float32)
+            except ValueError as e:
+                print(f"Error: {e}")
+                return False
 
         self.homography_matrix = cv2.getPerspectiveTransform(corners, known)
 
@@ -227,16 +308,22 @@ class ObjectMeasurer:
     def __init__(self, calibration_frame):
         self.frame = calibration_frame
 
-    def segment_object(self, warped_image, threshold=200, debug=False):
+    def segment_object(self, warped_image, delta=40, debug=False):
         """
-        Segment object from white background
+        Segment the object as pixels deviating from the background level,
+        in either direction - handles dark objects on light backgrounds AND
+        shiny/light objects on darker backgrounds.
+
+        Args:
+            delta: Minimum absolute difference from the background gray level
 
         Returns:
             Binary mask of the object
         """
-        gray = cv2.cvtColor(warped_image, cv2.COLOR_BGR2GRAY)
+        gray = cv2.cvtColor(warped_image, cv2.COLOR_BGR2GRAY).astype(np.int16)
+        background = float(np.median(gray))
 
-        _, binary = cv2.threshold(gray, threshold, 255, cv2.THRESH_BINARY_INV)
+        binary = (np.abs(gray - background) > delta).astype(np.uint8) * 255
 
         kernel = np.ones((5, 5), np.uint8)
         binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel)
@@ -355,11 +442,15 @@ class ObjectMeasurer:
 
         obj_level = float(np.median(gray[interior > 0]))
         bg_level = float(np.median(gray[background_ring]))
-        if bg_level - obj_level < 20:  # too little contrast to trust
+        if abs(bg_level - obj_level) < 20:  # too little contrast to trust
             return contour
 
         mid = (obj_level + bg_level) / 2.0
-        _, binary = cv2.threshold(gray, mid, 255, cv2.THRESH_BINARY_INV)
+        # Select the object side of the midpoint, whichever polarity
+        if obj_level < bg_level:
+            _, binary = cv2.threshold(gray, mid, 255, cv2.THRESH_BINARY_INV)
+        else:
+            _, binary = cv2.threshold(gray, mid, 255, cv2.THRESH_BINARY)
         # Only consider the neighbourhood of the original detection
         binary[far == 0] = 0
 
@@ -383,11 +474,16 @@ class ObjectMeasurer:
         if best_overlap == 0:
             return contour
 
-        # Sanity guard: refinement corrects sub-mm blur bias, so the area
-        # should barely change. A large growth means it latched onto a
-        # shadow or neighbouring region - keep the original instead.
+        # Sanity guard: refinement corrects sub-mm blur bias, so neither the
+        # area nor the bounding box should change much. Growth means it
+        # latched onto a shadow; shrinkage means it dropped part of a
+        # mixed-brightness object (e.g. shiny metal with dark shading).
         orig_area = max(cv2.contourArea(contour), 1)
-        if not (0.6 < cv2.contourArea(best) / orig_area < 1.3):
+        if not (0.75 < cv2.contourArea(best) / orig_area < 1.25):
+            return contour
+        _, _, ow, oh = cv2.boundingRect(contour)
+        _, _, nw, nh = cv2.boundingRect(best)
+        if abs(nw - ow) > 20 or abs(nh - oh) > 20:  # >2mm bbox change
             return contour
 
         return best
@@ -424,8 +520,16 @@ class ObjectMeasurer:
         n_add, add_labels = cv2.connectedComponents(added)
         result = mask.copy()
         for label in range(1, n_add):
-            comp = add_labels == label
-            if dist_outside[comp].max() > 10:  # reaches >1mm beyond boundary
+            comp = (add_labels == label)
+            # Must reach >1mm beyond the boundary (not just the edge ring)
+            if dist_outside[comp].max() <= 10:
+                continue
+            # Must be a THIN structure (tip, arm): interior never more than
+            # ~2mm from its own boundary. Fat additions (shadow lobes,
+            # neighbouring blobs) are rejected.
+            comp_mask = comp.astype(np.uint8) * 255
+            thickness = cv2.distanceTransform(comp_mask, cv2.DIST_L2, 5).max()
+            if thickness <= 20:
                 result[comp] = 255
 
         if np.array_equal(result, mask):
@@ -438,10 +542,10 @@ class ObjectMeasurer:
             return contour
         best = max(contours, key=cv2.contourArea)
 
-        # Guard: thin extensions barely change area. A big jump means the
-        # edge map bridged to something else - keep the original.
+        # Guard: even thin extensions shouldn't multiply the area many times
+        # over - that means the edge map bridged across the scene.
         orig_area = max(cv2.contourArea(contour), 1)
-        if cv2.contourArea(best) / orig_area > 1.5:
+        if cv2.contourArea(best) / orig_area > 3.0:
             return contour
 
         return best
@@ -469,14 +573,14 @@ class ObjectMeasurer:
         max_width = w * 0.95
         max_height = h * 0.95
 
-        # ADAPTIVE MULTI-THRESHOLD SEGMENTATION
-        # Thresholds relative to the actual background brightness, so dim or
-        # bright photos both work. Median over the window is dominated by
-        # background pixels.
+        # ADAPTIVE MULTI-DELTA SEGMENTATION
+        # Try several contrast levels relative to the background so faint
+        # and strong objects both segment; scoring picks the best candidate.
         gray = cv2.cvtColor(warped_image, cv2.COLOR_BGR2GRAY)
         background = float(np.median(gray))
-        thresholds_to_try = sorted({max(30, int(background * f))
-                                    for f in (0.50, 0.62, 0.74, 0.85, 0.93)})
+        contrast_range = max(background, 255 - background)
+        deltas_to_try = sorted({max(12, int(contrast_range * f))
+                                for f in (0.07, 0.15, 0.26, 0.38, 0.50)})
 
         # Precompute gradient magnitude for boundary-sharpness scoring
         gx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
@@ -493,8 +597,8 @@ class ObjectMeasurer:
 
         all_candidates = []
 
-        for thresh in thresholds_to_try:
-            binary = self.segment_object(warped_image, threshold=thresh, debug=False)
+        for delta in deltas_to_try:
+            binary = self.segment_object(warped_image, delta=delta, debug=False)
             contours, _ = cv2.findContours(binary, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
 
             for contour in contours:
@@ -512,14 +616,15 @@ class ObjectMeasurer:
 
                     all_candidates.append({
                         'contour': contour,
-                        'threshold': thresh,
+                        'delta': delta,
                         'score': score,
                         'metrics': metrics,
                         'area': area
                     })
 
         if len(all_candidates) == 0:
-            return {"error": "No object detected at any threshold (tried 170-245)"}
+            return {"error": "No object detected at any contrast level - "
+                             "check the object contrasts with the background"}
 
         # CONVEX HULL MODE: For objects with large hollow interiors (e.g., pliers, scissors)
         if use_convex_hull and len(all_candidates) >= 2:
@@ -542,8 +647,8 @@ class ObjectMeasurer:
 
         if debug and not use_convex_hull:
             print(f"\nAdaptive Segmentation Results:")
-            print(f"  Tried {len(thresholds_to_try)} thresholds, found {len(all_candidates)} candidates")
-            print(f"  Best: threshold={best_candidate['threshold']}, score={best_candidate['score']:.3f}")
+            print(f"  Tried {len(deltas_to_try)} contrast levels, found {len(all_candidates)} candidates")
+            print(f"  Best: delta={best_candidate['delta']}, score={best_candidate['score']:.3f}")
 
         # Calculate measurements in pixels
         perimeter_pixels = cv2.arcLength(object_contour, closed=True)

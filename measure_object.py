@@ -660,7 +660,7 @@ class ObjectMeasurer:
         return approx.astype(np.int32)
 
     def measure_object(self, warped_image, threshold=200, debug=False, use_convex_hull=False,
-                       smooth=2.5):
+                       smooth=2.5, min_contrast=0):
         """
         Measure the object in the calibrated image using adaptive multi-threshold segmentation
 
@@ -689,7 +689,9 @@ class ObjectMeasurer:
         gray = cv2.cvtColor(warped_image, cv2.COLOR_BGR2GRAY)
         background = float(np.median(gray))
         contrast_range = max(background, 255 - background)
-        deltas_to_try = sorted({max(12, int(contrast_range * f))
+        # min_contrast raises the floor: anything closer to the background
+        # level than this (soft shadows) is never counted as object
+        deltas_to_try = sorted({max(12, int(min_contrast), int(contrast_range * f))
                                 for f in (0.07, 0.15, 0.26, 0.38, 0.50)})
 
         # Precompute gradient magnitude for boundary-sharpness scoring
@@ -974,6 +976,9 @@ def main():
                        help='Print machine-readable JSON result as the last line')
     parser.add_argument('--smooth', type=float, default=2.5,
                        help='Contour smoothing strength (0 = off, default 2.5)')
+    parser.add_argument('--min-contrast', type=float, default=0,
+                       help='Shadow cut: minimum difference from background to count '
+                            'as object (0 = auto, raise to exclude soft shadows)')
 
     args = parser.parse_args()
 
@@ -1006,7 +1011,7 @@ def main():
     measurer = ObjectMeasurer(frame)
     measurements = measurer.measure_object(warped, threshold=args.threshold,
                                           debug=args.debug, use_convex_hull=args.convex_hull,
-                                          smooth=args.smooth)
+                                          smooth=args.smooth, min_contrast=args.min_contrast)
 
     if "error" in measurements:
         print(f"Error: {measurements['error']}")

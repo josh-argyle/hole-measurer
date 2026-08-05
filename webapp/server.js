@@ -55,6 +55,9 @@ app.post('/api/measure', upload.single('photo'), (req, res) => {
   if (smooth !== undefined && smooth !== '') {
     args.push('--smooth', String(parseFloat(smooth)));
   }
+  if (req.body.minContrast !== undefined && req.body.minContrast !== '') {
+    args.push('--min-contrast', String(parseFloat(req.body.minContrast)));
+  }
 
   execFile(UV, args, { timeout: 120000 }, (err, stdout, stderr) => {
     fs.rm(imagePath, { force: true }, () => {});

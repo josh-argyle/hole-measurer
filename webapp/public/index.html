@@ -289,6 +289,13 @@
           </div>
           <input type="range" id="opt-smooth" min="0" max="8" step="0.5" value="2.5">
         </div>
+        <div class="opt" style="grid-column: 1 / -1">
+          <div class="range-label">
+            <label for="opt-shadow">Shadow cut</label>
+            <output id="shadow-val" for="opt-shadow">0</output>
+          </div>
+          <input type="range" id="opt-shadow" min="0" max="80" step="5" value="0">
+        </div>
         <div class="opt-check">
           <input type="checkbox" id="opt-hull">
           <label for="opt-hull">Convex hull (hollow objects: pliers, scissors)</label>
@@ -334,6 +341,16 @@
     if (lastFile) measure(lastFile);
   });
 
+  // Shadow-cut slider: minimum contrast from background to count as object
+  const shadowSlider = document.getElementById('opt-shadow');
+  const shadowVal = document.getElementById('shadow-val');
+  shadowSlider.addEventListener('input', () => {
+    shadowVal.textContent = shadowSlider.value;
+  });
+  shadowSlider.addEventListener('change', () => {
+    if (lastFile) measure(lastFile);
+  });
+
   ['dragenter', 'dragover'].forEach(ev => dropframe.addEventListener(ev, e => {
     e.preventDefault(); dropframe.classList.add('dragover');
   }));
@@ -364,6 +381,7 @@
     form.append('height', document.getElementById('opt-height').value);
     form.append('convexHull', document.getElementById('opt-hull').checked);
     form.append('smooth', smoothSlider.value);
+    form.append('minContrast', shadowSlider.value);
 
     try {
       const resp = await fetch('/api/measure', { method: 'POST', body: form });

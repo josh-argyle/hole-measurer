@@ -40,6 +40,7 @@
     letter-spacing: 0.14em;
     text-transform: uppercase;
   }
+  .title-stack { display: flex; flex-direction: column; gap: 2px; }
   .masthead .subtitle {
     font-style: italic;
     font-size: 0.85rem;
@@ -246,8 +247,10 @@
 
 <header>
   <div class="masthead">
-    <h1>Measur</h1>
-    <span class="subtitle">working title</span>
+    <div class="title-stack">
+      <h1>Measur</h1>
+      <span class="subtitle">working title</span>
+    </div>
     <span class="unit">mm</span>
   </div>
   <div class="rule" aria-hidden="true"></div>

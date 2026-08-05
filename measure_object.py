@@ -836,7 +836,25 @@ def annotate_measurements(warped_image, measurements):
             box = box @ M[:, :2].T + M[:, 2]
 
     cv2.drawContours(out, [contour], -1, (0, 255, 0), 3)
-    cv2.polylines(out, [box.astype(np.int32)], True, (255, 0, 0), 2)
+
+    def dotted_polyline(pts, color, thickness=2, dash=5, gap=7):
+        """Draw a closed polyline as dots (OpenCV has no dashed primitive)"""
+        loop = np.vstack([pts, pts[:1]]).astype(np.float64)
+        for p1, p2 in zip(loop[:-1], loop[1:]):
+            seg = p2 - p1
+            length = np.linalg.norm(seg)
+            if length < 1:
+                continue
+            direction = seg / length
+            pos = 0.0
+            while pos < length:
+                a = p1 + direction * pos
+                b = p1 + direction * min(pos + dash, length)
+                cv2.line(out, tuple(a.astype(int)), tuple(b.astype(int)),
+                         color, thickness)
+                pos += dash + gap
+
+    dotted_polyline(box, (255, 0, 0))
 
     font = cv2.FONT_HERSHEY_SIMPLEX
     fscale = max(0.6, min(w_img, h_img) / 1200.0)

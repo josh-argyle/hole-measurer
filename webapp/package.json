@@ -1,0 +1,13 @@
+{
+  "name": "hole-measurer-web",
+  "version": "1.0.0",
+  "description": "Web interface for the calibration frame measurement tool",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "multer": "^1.4.5-lts.2"
+  }
+}

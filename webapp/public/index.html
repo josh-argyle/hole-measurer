@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hole Measurer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@600&family=IBM+Plex+Sans:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --paper: #f6f5f1;
+    --ink: #1c2321;
+    --blue: #2b50e0;
+    --green: #109a54;
+    --graphite: #77786f;
+    --line: #d8d6cd;
+    --error: #c63a2f;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { height: 100%; }
+  body {
+    font-family: 'IBM Plex Sans', sans-serif;
+    background: var(--paper);
+    color: var(--ink);
+    min-height: 100%;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* ---------- header with millimetre rule ---------- */
+  header { padding: 28px 32px 0; }
+  .masthead { display: flex; align-items: baseline; gap: 14px; }
+  h1 {
+    font-family: 'IBM Plex Sans Condensed', sans-serif;
+    font-weight: 600;
+    font-size: 1.55rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+  }
+  .masthead .unit {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.8rem;
+    color: var(--graphite);
+  }
+  /* mm graduations: fine tick every 4px, tall tick every 40px */
+  .rule {
+    margin-top: 14px;
+    height: 14px;
+    border-bottom: 2px solid var(--ink);
+    background:
+      repeating-linear-gradient(to right, var(--ink) 0 1px, transparent 1px 40px) bottom / 100% 14px no-repeat,
+      repeating-linear-gradient(to right, var(--ink) 0 1px, transparent 1px 8px) bottom / 100% 7px no-repeat;
+  }
+
+  main {
+    flex: 1;
+    display: grid;
+    grid-template-columns: 1fr 320px;
+    gap: 28px;
+    padding: 28px 32px 40px;
+    align-items: start;
+    max-width: 1400px;
+    width: 100%;
+    margin: 0 auto;
+  }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+
+  /* ---------- viewer: styled as the physical frame ---------- */
+  .frame {
+    background: #111;
+    border-radius: 6px;
+    padding: 26px;               /* the black border of the printed frame */
+    cursor: pointer;
+    transition: box-shadow 0.15s ease;
+  }
+  .frame:focus-visible { outline: 3px solid var(--blue); outline-offset: 3px; }
+  .frame.dragover { box-shadow: 0 0 0 3px var(--blue); }
+  .window {
+    background: #fff;
+    border-radius: 3px;
+    min-height: 420px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+    overflow: hidden;
+  }
+  .window img { display: block; width: 100%; height: auto; }
+  .placeholder { text-align: center; padding: 40px 24px; }
+  .placeholder .cross {
+    font-family: 'IBM Plex Mono', monospace;
+    color: var(--blue);
+    font-size: 1.6rem;
+    display: block;
+    margin-bottom: 14px;
+  }
+  .placeholder p { color: var(--graphite); font-size: 0.95rem; max-width: 34ch; margin: 0 auto; }
+  .placeholder p strong { color: var(--ink); font-weight: 500; }
+  .placeholder .hint {
+    margin-top: 10px;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.75rem;
+  }
+  .window .busy {
+    position: absolute; inset: 0;
+    background: rgba(255,255,255,0.88);
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px;
+    font-family: 'IBM Plex Mono', monospace; font-size: 0.85rem; color: var(--graphite);
+  }
+  /* scanning line while measuring */
+  .busy .scanline {
+    width: 60%; height: 2px; background: var(--blue); position: relative; overflow: visible;
+    animation: scan 1.6s ease-in-out infinite alternate;
+  }
+  @keyframes scan { from { transform: translateY(-60px); } to { transform: translateY(60px); } }
+  @media (prefers-reduced-motion: reduce) { .busy .scanline { animation: none; } }
+
+  /* ---------- title block (engineering drawing style) ---------- */
+  .titleblock {
+    border: 2px solid var(--ink);
+    background: #fff;
+  }
+  .tb-head {
+    font-family: 'IBM Plex Sans Condensed', sans-serif;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    font-size: 0.8rem;
+    padding: 10px 14px;
+    border-bottom: 2px solid var(--ink);
+    display: flex; justify-content: space-between; align-items: baseline;
+  }
+  .tb-head .file {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.7rem; font-weight: 400;
+    color: var(--graphite); text-transform: none; letter-spacing: 0;
+    max-width: 15ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .tb-row {
+    display: flex; justify-content: space-between; align-items: baseline;
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--line);
+  }
+  .tb-row:last-of-type { border-bottom: none; }
+  .tb-row .label {
+    font-size: 0.78rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--graphite);
+  }
+  .tb-row .value {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 1.05rem;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+  .tb-row .value small { font-weight: 400; color: var(--graphite); font-size: 0.75rem; }
+  .tb-row.dim .value { color: var(--blue); font-size: 1.35rem; }
+  .tb-empty { padding: 22px 14px; color: var(--graphite); font-size: 0.85rem; }
+  .tb-error {
+    padding: 14px; font-size: 0.85rem; color: var(--error);
+    border-top: 2px solid var(--error); background: #fdf3f2;
+  }
+
+  /* ---------- options ---------- */
+  .options { margin-top: 20px; border-top: 1px solid var(--line); padding-top: 16px; }
+  .options summary {
+    font-family: 'IBM Plex Sans Condensed', sans-serif;
+    font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase;
+    font-size: 0.75rem; color: var(--graphite); cursor: pointer; list-style: none;
+  }
+  .options summary::after { content: ' +'; }
+  .options[open] summary::after { content: ' \2212'; }
+  .opt-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 14px; }
+  .opt { display: flex; flex-direction: column; gap: 4px; }
+  .opt label { font-size: 0.75rem; color: var(--graphite); }
+  .opt input[type=number] {
+    font-family: 'IBM Plex Mono', monospace;
+    padding: 7px 9px; border: 1px solid var(--line); border-radius: 3px;
+    background: #fff; font-size: 0.9rem; width: 100%;
+  }
+  .opt input[type=number]:focus-visible { outline: 2px solid var(--blue); }
+  .opt-check { grid-column: 1 / -1; display: flex; gap: 8px; align-items: center; }
+  .opt-check label { font-size: 0.85rem; color: var(--ink); }
+  .opt-check input { accent-color: var(--blue); width: 16px; height: 16px; }
+
+  footer {
+    padding: 14px 32px;
+    border-top: 1px solid var(--line);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.72rem;
+    color: var(--graphite);
+    display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+  }
+  input[type=file] { display: none; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="masthead">
+    <h1>Hole Measurer</h1>
+    <span class="unit">mm</span>
+  </div>
+  <div class="rule" aria-hidden="true"></div>
+</header>
+
+<main>
+  <div>
+    <div class="frame" id="dropframe" tabindex="0" role="button"
+         aria-label="Choose or drop a photo to measure">
+      <div class="window" id="window">
+        <div class="placeholder" id="placeholder">
+          <span class="cross">+</span>
+          <p><strong>Drop a photo here</strong> or click to choose one.</p>
+          <p class="hint">object inside the black frame &middot; jpg / png</p>
+        </div>
+        <img id="result-img" alt="Annotated measurement result" hidden>
+        <div class="busy" id="busy" hidden>
+          <div class="scanline"></div>
+          measuring&hellip;
+        </div>
+      </div>
+    </div>
+    <input type="file" id="file-input" accept="image/*">
+  </div>
+
+  <aside class="titleblock" aria-live="polite">
+    <div class="tb-head">
+      <span>Measurements</span>
+      <span class="file" id="tb-file"></span>
+    </div>
+    <div id="tb-body">
+      <div class="tb-empty">Waiting for a photo.</div>
+    </div>
+    <div class="tb-error" id="tb-error" hidden></div>
+
+    <details class="options" style="padding:0 14px 16px">
+      <summary>Frame settings</summary>
+      <div class="opt-grid">
+        <div class="opt">
+          <label for="opt-width">Inner width (mm)</label>
+          <input type="number" id="opt-width" value="150" step="0.1" min="10">
+        </div>
+        <div class="opt">
+          <label for="opt-height">Inner height (mm)</label>
+          <input type="number" id="opt-height" value="150" step="0.1" min="10">
+        </div>
+        <div class="opt-check">
+          <input type="checkbox" id="opt-hull">
+          <label for="opt-hull">Convex hull (hollow objects: pliers, scissors)</label>
+        </div>
+      </div>
+    </details>
+  </aside>
+</main>
+
+<footer>
+  <span>frame 170 &times; 170 mm &middot; border 10 mm</span>
+  <span id="scale-note"></span>
+</footer>
+
+<script>
+  const dropframe = document.getElementById('dropframe');
+  const fileInput = document.getElementById('file-input');
+  const resultImg = document.getElementById('result-img');
+  const placeholder = document.getElementById('placeholder');
+  const busy = document.getElementById('busy');
+  const tbBody = document.getElementById('tb-body');
+  const tbError = document.getElementById('tb-error');
+  const tbFile = document.getElementById('tb-file');
+  const scaleNote = document.getElementById('scale-note');
+
+  dropframe.addEventListener('click', () => fileInput.click());
+  dropframe.addEventListener('keydown', e => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fileInput.click(); }
+  });
+  fileInput.addEventListener('change', () => {
+    if (fileInput.files[0]) measure(fileInput.files[0]);
+  });
+
+  ['dragenter', 'dragover'].forEach(ev => dropframe.addEventListener(ev, e => {
+    e.preventDefault(); dropframe.classList.add('dragover');
+  }));
+  ['dragleave', 'drop'].forEach(ev => dropframe.addEventListener(ev, e => {
+    e.preventDefault(); dropframe.classList.remove('dragover');
+  }));
+  dropframe.addEventListener('drop', e => {
+    const f = e.dataTransfer.files[0];
+    if (f) measure(f);
+  });
+
+  function row(label, value, unit, cls = '') {
+    return `<div class="tb-row ${cls}">
+      <span class="label">${label}</span>
+      <span class="value">${value}&nbsp;<small>${unit}</small></span>
+    </div>`;
+  }
+
+  async function measure(file) {
+    tbError.hidden = true;
+    busy.hidden = false;
+    tbFile.textContent = file.name;
+
+    const form = new FormData();
+    form.append('photo', file);
+    form.append('width', document.getElementById('opt-width').value);
+    form.append('height', document.getElementById('opt-height').value);
+    form.append('convexHull', document.getElementById('opt-hull').checked);
+
+    try {
+      const resp = await fetch('/api/measure', { method: 'POST', body: form });
+      const data = await resp.json();
+      busy.hidden = true;
+
+      if (!data.ok) {
+        tbError.textContent = data.error;
+        tbError.hidden = false;
+        return;
+      }
+
+      resultImg.src = data.image_url + '?t=' + Date.now();
+      resultImg.hidden = false;
+      placeholder.hidden = true;
+
+      tbBody.innerHTML =
+        row('Width', data.width_mm.toFixed(2), 'mm', 'dim') +
+        row('Height', data.height_mm.toFixed(2), 'mm', 'dim') +
+        row('Perimeter', data.perimeter_mm.toFixed(2), 'mm') +
+        row('Area', data.area_mm2.toFixed(1), 'mm&sup2;');
+      scaleNote.textContent = 'scale ' + data.mm_per_pixel.toFixed(4) + ' mm/px';
+    } catch (err) {
+      busy.hidden = true;
+      tbError.textContent = 'Could not reach the measurement server.';
+      tbError.hidden = false;
+    }
+  }
+</script>
+</body>
+</html>

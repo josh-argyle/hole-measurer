@@ -746,6 +746,8 @@ def main():
     parser.add_argument('--save-output',
                        help='Path for the annotated output image '
                             '(default: output/<image>_measured.png in the repo)')
+    parser.add_argument('--json', action='store_true',
+                       help='Print machine-readable JSON result as the last line')
 
     args = parser.parse_args()
 
@@ -761,6 +763,11 @@ def main():
     print("\nCalibrating...")
     if not frame.calibrate(image, debug=args.debug):
         print("Calibration failed!")
+        if args.json:
+            import json
+            print(json.dumps({"ok": False,
+                              "error": "Calibration failed - make sure the whole "
+                                       "black frame is visible in the photo"}))
         return
 
     print("\nWarping to calibrated view...")
@@ -786,6 +793,7 @@ def main():
         print(f"Bounding Box:  {measurements['bounding_box_width_mm']:.2f} x {measurements['bounding_box_height_mm']:.2f} mm")
         print("="*50)
 
+    out_path = None
     if "contour" in measurements:
         if args.save_output:
             out_path = Path(args.save_output)
@@ -796,6 +804,22 @@ def main():
         output = annotate_measurements(warped, measurements)
         cv2.imwrite(str(out_path), output)
         print(f"\nSaved annotated output to: {out_path}")
+
+    if args.json:
+        import json
+        if "error" in measurements:
+            payload = {"ok": False, "error": measurements["error"]}
+        else:
+            payload = {
+                "ok": True,
+                "width_mm": round(measurements['bounding_box_width_mm'], 2),
+                "height_mm": round(measurements['bounding_box_height_mm'], 2),
+                "perimeter_mm": round(measurements['perimeter_mm'], 2),
+                "area_mm2": round(measurements['area_mm2'], 2),
+                "mm_per_pixel": round(frame.mm_per_pixel, 5),
+                "output_image": str(out_path),
+            }
+        print(json.dumps(payload))
 
     if args.debug:
         print("\nPress any key to close windows...")

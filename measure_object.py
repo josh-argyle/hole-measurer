@@ -676,6 +676,61 @@ class ObjectMeasurer:
         return measurements
 
 
+def annotate_measurements(warped_image, measurements):
+    """
+    Draw the contour, bounding box, and dimension labels on each edge
+    of the bounding box. Returns the annotated image.
+    """
+    out = warped_image.copy()
+    h_img, w_img = out.shape[:2]
+    x, y, w, h = measurements['bounding_box']
+
+    cv2.drawContours(out, [measurements['contour']], -1, (0, 255, 0), 3)
+    cv2.rectangle(out, (x, y), (x + w, y + h), (255, 0, 0), 2)
+
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    fscale = max(0.6, min(w_img, h_img) / 1200.0)
+    fthick = max(1, int(round(fscale * 2)))
+    blue = (255, 0, 0)
+
+    def label(text, cx, cy):
+        """Draw text centered at (cx, cy) on a white pill, clamped inside"""
+        (tw, th), base = cv2.getTextSize(text, font, fscale, fthick)
+        cx = int(np.clip(cx, tw // 2 + 6, w_img - tw // 2 - 6))
+        cy = int(np.clip(cy, th + 6, h_img - base - 6))
+        cv2.rectangle(out, (cx - tw // 2 - 5, cy - th - 5),
+                      (cx + tw // 2 + 5, cy + base + 5), (255, 255, 255), -1)
+        cv2.rectangle(out, (cx - tw // 2 - 5, cy - th - 5),
+                      (cx + tw // 2 + 5, cy + base + 5), blue, 1)
+        cv2.putText(out, text, (cx - tw // 2, cy), font, fscale, blue, fthick)
+
+    def tick_line(p1, p2, tick):
+        cv2.line(out, p1, p2, blue, 2)
+        for (px, py) in (p1, p2):
+            cv2.line(out, (px - tick[0], py - tick[1]),
+                     (px + tick[0], py + tick[1]), blue, 2)
+
+    gap = 18
+    width_text = f"{measurements['bounding_box_width_mm']:.1f} mm"
+    height_text = f"{measurements['bounding_box_height_mm']:.1f} mm"
+
+    # Width: dimension line above the box (below it if no room)
+    ly = y - gap if y - gap - 40 > 0 else min(y + h + gap, h_img - 3)
+    tick_line((x, ly), (x + w, ly), (0, 8))
+    label(width_text, x + w // 2, ly - 12 if ly < y else ly + 30)
+
+    # Height: dimension line right of the box (left if no room)
+    lx = x + w + gap if x + w + gap + 40 < w_img else max(x - gap, 3)
+    tick_line((lx, y), (lx, y + h), (8, 0))
+    label(height_text, lx + 14 + int(30 * fscale), y + h // 2)
+
+    # Summary in the top-left corner
+    label(f"Perimeter {measurements['perimeter_mm']:.1f} mm   "
+          f"Area {measurements['area_mm2']:.0f} mm2", w_img // 2, 14)
+
+    return out
+
+
 def main():
     parser = argparse.ArgumentParser(description='Measure objects using calibration frame')
     parser.add_argument('image', help='Path to image file')
@@ -738,10 +793,7 @@ def main():
             OUTPUT_DIR.mkdir(exist_ok=True)
             out_path = OUTPUT_DIR / f"{Path(args.image).stem}_measured.png"
 
-        output = warped.copy()
-        cv2.drawContours(output, [measurements['contour']], -1, (0, 255, 0), 3)
-        x, y, w, h = measurements['bounding_box']
-        cv2.rectangle(output, (x, y), (x+w, y+h), (255, 0, 0), 2)
+        output = annotate_measurements(warped, measurements)
         cv2.imwrite(str(out_path), output)
         print(f"\nSaved annotated output to: {out_path}")
 

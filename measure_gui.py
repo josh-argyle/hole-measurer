@@ -12,7 +12,8 @@ import cv2
 import numpy as np
 from pathlib import Path
 from measure_object import (CalibrationFrame, ObjectMeasurer, OUTPUT_DIR,
-                            DEFAULT_INNER_WIDTH_MM, DEFAULT_INNER_HEIGHT_MM)
+                            DEFAULT_INNER_WIDTH_MM, DEFAULT_INNER_HEIGHT_MM,
+                            annotate_measurements)
 
 
 class MeasurementGUI:
@@ -196,7 +197,7 @@ class MeasurementGUI:
                 raise ValueError(results["error"])
 
             # Draw results on warped image
-            result_image = self.draw_results(warped, results)
+            result_image = annotate_measurements(warped, results)
 
             # Save annotated result to the output folder
             OUTPUT_DIR.mkdir(exist_ok=True)

@@ -593,13 +593,68 @@ class ObjectMeasurer:
         kernel = np.exp(-0.5 * ((np.arange(ksize) - half) / sigma) ** 2)
         kernel /= kernel.sum()
 
-        # Wrap-around padding: the contour is a closed loop
-        ext = np.vstack([pts[-half:], pts, pts[:half]])
-        xs = np.convolve(ext[:, 0], kernel, mode='valid')
-        ys = np.convolve(ext[:, 1], kernel, mode='valid')
-        smooth = np.stack([xs, ys], axis=1).astype(np.float32)
+        # Find corners and tips: points where the contour turns sharply
+        # within a small support window. These are anchored - a Gaussian
+        # blindly rounds them inward, visibly shortening pointed objects.
+        k = max(3, int(round(sigma * 2)))
+        v1 = pts - np.roll(pts, k, axis=0)
+        v2 = np.roll(pts, -k, axis=0) - pts
+        dot = (v1 * v2).sum(axis=1)
+        norm = np.linalg.norm(v1, axis=1) * np.linalg.norm(v2, axis=1)
+        turn = np.degrees(np.arccos(np.clip(dot / np.maximum(norm, 1e-9), -1, 1)))
+        corner_mask = turn > 50
 
-        approx = cv2.approxPolyDP(smooth.reshape(-1, 1, 2), epsilon, True)
+        def smooth_open(seg):
+            """Gaussian-smooth an open segment, endpoints held fixed
+            (antisymmetric reflection padding preserves them exactly)"""
+            if len(seg) < 2 * half + 3:
+                return seg
+            front = 2 * seg[0] - seg[half:0:-1]
+            back = 2 * seg[-1] - seg[-2:-2 - half:-1]
+            ext = np.vstack([front, seg, back])
+            xs = np.convolve(ext[:, 0], kernel, mode='valid')
+            ys = np.convolve(ext[:, 1], kernel, mode='valid')
+            return np.stack([xs, ys], axis=1)
+
+        if not corner_mask.any():
+            # No corners (e.g. a disc): circular smoothing of the whole loop
+            ext = np.vstack([pts[-half:], pts, pts[:half]])
+            xs = np.convolve(ext[:, 0], kernel, mode='valid')
+            ys = np.convolve(ext[:, 1], kernel, mode='valid')
+            smooth = np.stack([xs, ys], axis=1)
+        elif corner_mask.all():
+            return contour
+        else:
+            # One anchor per contiguous corner run: its sharpest point.
+            # Rotate so index 0 is not inside a run, keeping runs contiguous.
+            start = int(np.argmin(corner_mask))
+            rolled = np.roll(corner_mask, -start)
+            turn_rolled = np.roll(turn, -start)
+            anchors = []
+            i = 0
+            while i < n:
+                if rolled[i]:
+                    j = i
+                    while j < n and rolled[j]:
+                        j += 1
+                    run = np.arange(i, j)
+                    anchors.append((int(run[np.argmax(turn_rolled[run])]) + start) % n)
+                    i = j
+                else:
+                    i += 1
+            anchors.sort()
+
+            # Smooth each stretch between consecutive anchors independently
+            pieces = []
+            m = len(anchors)
+            for idx in range(m):
+                a, b = anchors[idx], anchors[(idx + 1) % m]
+                seg = pts[a:b + 1] if b > a else np.vstack([pts[a:], pts[:b + 1]])
+                pieces.append(smooth_open(seg)[:-1])  # drop dup anchor
+            smooth = np.vstack(pieces)
+
+        approx = cv2.approxPolyDP(smooth.astype(np.float32).reshape(-1, 1, 2),
+                                  epsilon, True)
         if len(approx) < 3:
             return contour
         return approx.astype(np.int32)

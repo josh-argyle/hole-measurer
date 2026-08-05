@@ -10,7 +10,8 @@ from tkinter import ttk
 from PIL import Image, ImageTk
 import cv2
 import numpy as np
-from measure_object import (CalibrationFrame, ObjectMeasurer,
+from pathlib import Path
+from measure_object import (CalibrationFrame, ObjectMeasurer, OUTPUT_DIR,
                             DEFAULT_INNER_WIDTH_MM, DEFAULT_INNER_HEIGHT_MM)
 
 
@@ -197,11 +198,16 @@ class MeasurementGUI:
             # Draw results on warped image
             result_image = self.draw_results(warped, results)
 
+            # Save annotated result to the output folder
+            OUTPUT_DIR.mkdir(exist_ok=True)
+            out_path = OUTPUT_DIR / f"{Path(self.current_image_path).stem}_measured.png"
+            cv2.imwrite(str(out_path), result_image)
+
             # Display
             self.display_image(result_image)
             self.display_measurements(results)
 
-            self.status_label.config(text=f"✓ Successfully measured: {self.current_image_path.split('/')[-1]}", fg="#27ae60")
+            self.status_label.config(text=f"✓ Saved to {out_path.name} in output folder", fg="#27ae60")
 
         except Exception as e:
             messagebox.showerror("Error", f"Failed to process image:\n{str(e)}")

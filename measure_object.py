@@ -11,6 +11,10 @@ white window the object sits in) and computing a homography from its
 import cv2
 import numpy as np
 import argparse
+from pathlib import Path
+
+# Annotated results are saved here by default (created on demand)
+OUTPUT_DIR = Path(__file__).resolve().parent / "output"
 
 
 # Inner-window dimensions of the calibration frame (mm).
@@ -523,7 +527,9 @@ def main():
                        help='Segmentation threshold (default: 200, lower for darker objects)')
     parser.add_argument('--convex-hull', action='store_true',
                        help='Use convex hull mode for objects with hollow interiors (pliers, scissors, etc.)')
-    parser.add_argument('--save-output', help='Save annotated output image to this path')
+    parser.add_argument('--save-output',
+                       help='Path for the annotated output image '
+                            '(default: output/<image>_measured.png in the repo)')
 
     args = parser.parse_args()
 
@@ -564,13 +570,19 @@ def main():
         print(f"Bounding Box:  {measurements['bounding_box_width_mm']:.2f} x {measurements['bounding_box_height_mm']:.2f} mm")
         print("="*50)
 
-    if args.save_output and "contour" in measurements:
+    if "contour" in measurements:
+        if args.save_output:
+            out_path = Path(args.save_output)
+        else:
+            OUTPUT_DIR.mkdir(exist_ok=True)
+            out_path = OUTPUT_DIR / f"{Path(args.image).stem}_measured.png"
+
         output = warped.copy()
         cv2.drawContours(output, [measurements['contour']], -1, (0, 255, 0), 3)
         x, y, w, h = measurements['bounding_box']
         cv2.rectangle(output, (x, y), (x+w, y+h), (255, 0, 0), 2)
-        cv2.imwrite(args.save_output, output)
-        print(f"\nSaved annotated output to: {args.save_output}")
+        cv2.imwrite(str(out_path), output)
+        print(f"\nSaved annotated output to: {out_path}")
 
     if args.debug:
         print("\nPress any key to close windows...")

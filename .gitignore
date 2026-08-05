@@ -11,9 +11,11 @@ env/
 ENV/
 
 # Test and debug files
-test_*.py
 debug_*.py
 check_*.py
+
+# Annotated measurement results
+output/
 
 # Output images (temporary results)
 *_result.png

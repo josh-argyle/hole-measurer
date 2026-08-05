@@ -95,5 +95,5 @@ app.post('/api/measure', upload.single('photo'), (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Hole Measurer running at http://localhost:${PORT}`);
+  console.log(`Measur running at http://localhost:${PORT}`);
 });

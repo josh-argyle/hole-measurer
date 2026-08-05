@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Hole Measurer</title>
+<title>Measur</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@600&family=IBM+Plex+Sans:wght@400;500&display=swap" rel="stylesheet">
@@ -40,10 +40,16 @@
     letter-spacing: 0.14em;
     text-transform: uppercase;
   }
+  .masthead .subtitle {
+    font-style: italic;
+    font-size: 0.85rem;
+    color: var(--graphite);
+  }
   .masthead .unit {
     font-family: 'IBM Plex Mono', monospace;
     font-size: 0.8rem;
     color: var(--graphite);
+    margin-left: auto;
   }
   /* mm graduations: fine tick every 4px, tall tick every 40px */
   .rule {
@@ -240,7 +246,8 @@
 
 <header>
   <div class="masthead">
-    <h1>Hole Measurer</h1>
+    <h1>Measur</h1>
+    <span class="subtitle">working title</span>
     <span class="unit">mm</span>
   </div>
   <div class="rule" aria-hidden="true"></div>

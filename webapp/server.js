@@ -15,7 +15,7 @@ const os = require('os');
 const REPO_ROOT = path.resolve(__dirname, '..');
 const OUTPUT_DIR = path.join(REPO_ROOT, 'output');
 const UPLOAD_DIR = path.join(os.tmpdir(), 'hole-measurer-uploads');
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 4780;
 
 // The engine runs through uv so OpenCV is available without a system install
 const UV = process.env.UV_BIN || path.join(os.homedir(), '.local', 'bin', 'uv');

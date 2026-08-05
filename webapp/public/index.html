@@ -326,8 +326,8 @@
       placeholder.hidden = true;
 
       tbBody.innerHTML =
+        row('Length', data.length_mm.toFixed(2), 'mm', 'dim') +
         row('Width', data.width_mm.toFixed(2), 'mm', 'dim') +
-        row('Height', data.height_mm.toFixed(2), 'mm', 'dim') +
         row('Perimeter', data.perimeter_mm.toFixed(2), 'mm') +
         row('Area', data.area_mm2.toFixed(1), 'mm&sup2;');
       scaleNote.textContent = 'scale ' + data.mm_per_pixel.toFixed(4) + ' mm/px';

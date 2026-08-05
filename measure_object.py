@@ -656,15 +656,24 @@ class ObjectMeasurer:
 
         x, y, bw, bh = cv2.boundingRect(object_contour)
 
+        # Oriented bounding box: the smallest rectangle at any angle, so the
+        # reported length/width follow the object, not the photo axes
+        (rcx, rcy), (rw, rh), rangle = cv2.minAreaRect(object_contour)
+        length_px, width_px = max(rw, rh), min(rw, rh)
+        rect_box = cv2.boxPoints(((rcx, rcy), (rw, rh), rangle))
+
         scale = 10  # pixels per mm (from warp_to_calibrated_view)
 
         measurements = {
             "perimeter_mm": perimeter_pixels / scale,
             "area_mm2": area_pixels / (scale * scale),
+            "length_mm": length_px / scale,
+            "width_mm": width_px / scale,
             "bounding_box_width_mm": bw / scale,
             "bounding_box_height_mm": bh / scale,
             "contour": object_contour,
-            "bounding_box": (x, y, bw, bh)
+            "bounding_box": (x, y, bw, bh),
+            "oriented_box": rect_box,
         }
 
         if debug:
@@ -683,10 +692,11 @@ def annotate_measurements(warped_image, measurements):
     """
     out = warped_image.copy()
     h_img, w_img = out.shape[:2]
-    x, y, w, h = measurements['bounding_box']
 
     cv2.drawContours(out, [measurements['contour']], -1, (0, 255, 0), 3)
-    cv2.rectangle(out, (x, y), (x + w, y + h), (255, 0, 0), 2)
+
+    box = measurements['oriented_box'].astype(np.float32)
+    cv2.polylines(out, [box.astype(np.int32)], True, (255, 0, 0), 2)
 
     font = cv2.FONT_HERSHEY_SIMPLEX
     fscale = max(0.6, min(w_img, h_img) / 1200.0)
@@ -704,27 +714,44 @@ def annotate_measurements(warped_image, measurements):
                       (cx + tw // 2 + 5, cy + base + 5), blue, 1)
         cv2.putText(out, text, (cx - tw // 2, cy), font, fscale, blue, fthick)
 
-    def tick_line(p1, p2, tick):
-        cv2.line(out, p1, p2, blue, 2)
-        for (px, py) in (p1, p2):
-            cv2.line(out, (px - tick[0], py - tick[1]),
-                     (px + tick[0], py + tick[1]), blue, 2)
+    center = box.mean(axis=0)
 
-    gap = 18
-    width_text = f"{measurements['bounding_box_width_mm']:.1f} mm"
-    height_text = f"{measurements['bounding_box_height_mm']:.1f} mm"
+    def dimension_line(p1, p2, text):
+        """Dimension line parallel to edge p1-p2, offset away from center,
+        with end ticks and a centered label"""
+        edge = p2 - p1
+        elen = np.linalg.norm(edge)
+        if elen < 1:
+            return
+        normal = np.array([-edge[1], edge[0]]) / elen
+        mid = (p1 + p2) / 2
+        if np.dot(mid - center, normal) < 0:
+            normal = -normal  # point outward
+        gap, tick = 20, 8
+        a = p1 + normal * gap
+        b = p2 + normal * gap
+        cv2.line(out, tuple(a.astype(int)), tuple(b.astype(int)), blue, 2)
+        for p in (a, b):
+            t1 = p - normal * tick
+            t2 = p + normal * tick
+            cv2.line(out, tuple(t1.astype(int)), tuple(t2.astype(int)), blue, 2)
+        lp = mid + normal * (gap + 26)
+        label(text, lp[0], lp[1])
 
-    # Width: dimension line above the box (below it if no room)
-    ly = y - gap if y - gap - 40 > 0 else min(y + h + gap, h_img - 3)
-    tick_line((x, ly), (x + w, ly), (0, 8))
-    label(width_text, x + w // 2, ly - 12 if ly < y else ly + 30)
+    # boxPoints returns points in order; adjacent edges alternate between
+    # the two side lengths. Label one long edge and one short edge.
+    e0_len = np.linalg.norm(box[1] - box[0])
+    e1_len = np.linalg.norm(box[2] - box[1])
+    length_text = f"{measurements['length_mm']:.1f} mm"
+    width_text = f"{measurements['width_mm']:.1f} mm"
+    if e0_len >= e1_len:
+        dimension_line(box[0], box[1], length_text)
+        dimension_line(box[1], box[2], width_text)
+    else:
+        dimension_line(box[1], box[2], length_text)
+        dimension_line(box[0], box[1], width_text)
 
-    # Height: dimension line right of the box (left if no room)
-    lx = x + w + gap if x + w + gap + 40 < w_img else max(x - gap, 3)
-    tick_line((lx, y), (lx, y + h), (8, 0))
-    label(height_text, lx + 14 + int(30 * fscale), y + h // 2)
-
-    # Summary in the top-left corner
+    # Summary banner
     label(f"Perimeter {measurements['perimeter_mm']:.1f} mm   "
           f"Area {measurements['area_mm2']:.0f} mm2", w_img // 2, 14)
 
@@ -788,9 +815,10 @@ def main():
         print("\n" + "="*50)
         print("FINAL MEASUREMENTS")
         print("="*50)
-        print(f"Perimeter:     {measurements['perimeter_mm']:.2f} mm")
-        print(f"Area:          {measurements['area_mm2']:.2f} mm²")
-        print(f"Bounding Box:  {measurements['bounding_box_width_mm']:.2f} x {measurements['bounding_box_height_mm']:.2f} mm")
+        print(f"Length x Width: {measurements['length_mm']:.2f} x {measurements['width_mm']:.2f} mm (oriented)")
+        print(f"Perimeter:      {measurements['perimeter_mm']:.2f} mm")
+        print(f"Area:           {measurements['area_mm2']:.2f} mm²")
+        print(f"Bounding Box:   {measurements['bounding_box_width_mm']:.2f} x {measurements['bounding_box_height_mm']:.2f} mm (photo axes)")
         print("="*50)
 
     out_path = None
@@ -812,8 +840,8 @@ def main():
         else:
             payload = {
                 "ok": True,
-                "width_mm": round(measurements['bounding_box_width_mm'], 2),
-                "height_mm": round(measurements['bounding_box_height_mm'], 2),
+                "length_mm": round(measurements['length_mm'], 2),
+                "width_mm": round(measurements['width_mm'], 2),
                 "perimeter_mm": round(measurements['perimeter_mm'], 2),
                 "area_mm2": round(measurements['area_mm2'], 2),
                 "mm_per_pixel": round(frame.mm_per_pixel, 5),

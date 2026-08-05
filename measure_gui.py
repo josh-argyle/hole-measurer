@@ -10,7 +10,8 @@ from tkinter import ttk
 from PIL import Image, ImageTk
 import cv2
 import numpy as np
-from measure_object import CalibrationFrame, ObjectMeasurer
+from measure_object import (CalibrationFrame, ObjectMeasurer,
+                            DEFAULT_INNER_WIDTH_MM, DEFAULT_INNER_HEIGHT_MM)
 
 
 class MeasurementGUI:
@@ -19,9 +20,9 @@ class MeasurementGUI:
         self.root.title("Hole Measurer - Object Measurement Tool")
         self.root.geometry("1200x800")
 
-        # Frame dimensions (mm)
-        self.frame_width_mm = 180.0
-        self.frame_height_mm = 101.25
+        # Inner-window dimensions of the calibration frame (mm)
+        self.frame_width_mm = DEFAULT_INNER_WIDTH_MM
+        self.frame_height_mm = DEFAULT_INNER_HEIGHT_MM
 
         # Current image path
         self.current_image_path = None
@@ -141,7 +142,7 @@ class MeasurementGUI:
 
         footer_label = tk.Label(
             footer_frame,
-            text="Powered by OpenCV & RANSAC • Use calibration frame (180mm × 101.25mm)",
+            text=f"Powered by OpenCV • Frame inner window: {DEFAULT_INNER_WIDTH_MM} × {DEFAULT_INNER_HEIGHT_MM} mm",
             font=("Arial", 9),
             bg="#34495e",
             fg="white"
@@ -181,7 +182,7 @@ class MeasurementGUI:
             # Calibrate
             success = frame.calibrate(image, debug=False)
             if not success:
-                raise ValueError("Calibration failed - ensure all frame holes are visible")
+                raise ValueError("Calibration failed - ensure the full black frame is visible")
 
             # Warp to calibrated view
             warped = frame.warp_to_calibrated_view(image)
@@ -322,8 +323,8 @@ Area:      {results['area_mm2']:>8.2f} mm²
 ═══════════════════════════
 
 Note: Measurements are based
-on calibrated frame
-(180.0 × 101.25 mm)
+on frame inner window
+({self.frame_width_mm} × {self.frame_height_mm} mm)
 """
 
         self.measurement_text.insert(1.0, text)

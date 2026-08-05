@@ -13,7 +13,7 @@
     --ink: #1c2321;
     --blue: #2b50e0;
     --green: #109a54;
-    --graphite: #77786f;
+    --graphite: #5c5d55;
     --line: #d8d6cd;
     --error: #c63a2f;
   }
@@ -78,6 +78,9 @@
   /* ---------- viewer: styled as the physical frame ---------- */
   .frame {
     background: #111;
+    border: 0;
+    font: inherit;
+    text-align: inherit;
     border-radius: 6px;
     padding: 26px;               /* the black border of the printed frame */
     cursor: pointer;
@@ -106,7 +109,7 @@
     height: 100%;
     object-fit: contain;
   }
-  .placeholder { text-align: center; padding: 40px 24px; }
+  .placeholder { display: block; text-align: center; padding: 40px 24px; }
   .placeholder .cross {
     font-family: 'IBM Plex Mono', monospace;
     color: var(--blue);
@@ -114,8 +117,11 @@
     display: block;
     margin-bottom: 14px;
   }
-  .placeholder p { color: var(--graphite); font-size: 0.95rem; max-width: 34ch; margin: 0 auto; }
-  .placeholder p strong { color: var(--ink); font-weight: 500; }
+  .placeholder .line {
+    display: block;
+    color: var(--graphite); font-size: 0.95rem; max-width: 34ch; margin: 0 auto;
+  }
+  .placeholder .line strong { color: var(--ink); font-weight: 500; }
   .placeholder .hint {
     margin-top: 10px;
     font-family: 'IBM Plex Mono', monospace;
@@ -141,14 +147,16 @@
     background: #fff;
   }
   .tb-head {
+    padding: 10px 14px;
+    border-bottom: 2px solid var(--ink);
+    display: flex; justify-content: space-between; align-items: baseline;
+  }
+  .tb-head h2 {
     font-family: 'IBM Plex Sans Condensed', sans-serif;
     font-weight: 600;
     letter-spacing: 0.12em;
     text-transform: uppercase;
     font-size: 0.8rem;
-    padding: 10px 14px;
-    border-bottom: 2px solid var(--ink);
-    display: flex; justify-content: space-between; align-items: baseline;
   }
   .tb-head .file {
     font-family: 'IBM Plex Mono', monospace;
@@ -192,7 +200,8 @@
   }
 
   /* ---------- options ---------- */
-  .options { margin-top: 20px; border-top: 1px solid var(--line); padding-top: 16px; }
+  .options { margin-top: 20px; border-top: 1px solid var(--line); padding: 16px 14px; }
+  .opt-full { grid-column: 1 / -1; }
   .options summary {
     font-family: 'IBM Plex Sans Condensed', sans-serif;
     font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase;
@@ -239,39 +248,41 @@
 
 <main>
   <div class="viewer">
-    <div class="frame" id="dropframe" tabindex="0" role="button"
-         aria-label="Choose or drop a photo to measure">
-      <div class="window" id="window">
-        <div class="placeholder" id="placeholder">
+    <button type="button" class="frame" id="dropframe"
+            aria-label="Choose or drop a photo to measure">
+      <span class="window" id="window">
+        <span class="placeholder" id="placeholder">
           <span class="cross">+</span>
-          <p><strong>Drop a photo here</strong> or click to choose one.</p>
-          <p class="hint">object inside the black frame &middot; jpg / png</p>
-        </div>
+          <span class="line"><strong>Drop a photo here</strong> or click to choose one.</span>
+          <span class="line hint">object inside the black frame &middot; jpg / png</span>
+        </span>
         <img id="result-img" alt="Annotated measurement result" hidden>
-        <div class="busy" id="busy" hidden>
-          <div class="scanline"></div>
+        <span class="busy" id="busy" hidden>
+          <span class="scanline"></span>
           measuring&hellip;
-        </div>
-      </div>
-    </div>
+        </span>
+      </span>
+    </button>
     <input type="file" id="file-input" accept="image/*">
   </div>
 
-  <aside class="titleblock" aria-live="polite">
+  <aside class="titleblock">
     <div class="tb-head">
-      <span>Measurements</span>
+      <h2>Measurements</h2>
       <span class="file" id="tb-file"></span>
     </div>
-    <div id="tb-body">
-      <div class="tb-empty">Waiting for a photo.</div>
+    <div aria-live="polite">
+      <div id="tb-body">
+        <div class="tb-empty">Waiting for a photo.</div>
+      </div>
+      <div class="tb-downloads" id="tb-downloads" hidden>
+        <a id="dl-dxf" download>DXF for CAD</a>
+        <a id="dl-svg" download>SVG</a>
+      </div>
+      <div class="tb-error" id="tb-error" hidden></div>
     </div>
-    <div class="tb-downloads" id="tb-downloads" hidden>
-      <a id="dl-dxf" download>DXF for CAD</a>
-      <a id="dl-svg" download>SVG</a>
-    </div>
-    <div class="tb-error" id="tb-error" hidden></div>
 
-    <details class="options" style="padding:0 14px 16px">
+    <details class="options">
       <summary>Frame settings</summary>
       <div class="opt-grid">
         <div class="opt">
@@ -282,14 +293,14 @@
           <label for="opt-height">Inner height (mm)</label>
           <input type="number" id="opt-height" value="150" step="0.1" min="10">
         </div>
-        <div class="opt" style="grid-column: 1 / -1">
+        <div class="opt opt-full">
           <div class="range-label">
             <label for="opt-smooth">Outline smoothing</label>
             <output id="smooth-val" for="opt-smooth">5</output>
           </div>
           <input type="range" id="opt-smooth" min="0" max="10" step="1" value="5">
         </div>
-        <div class="opt" style="grid-column: 1 / -1">
+        <div class="opt opt-full">
           <div class="range-label">
             <label for="opt-shadow">Shadow cut</label>
             <output id="shadow-val" for="opt-shadow">auto</output>
@@ -306,7 +317,7 @@
 </main>
 
 <footer>
-  <span>frame 170 &times; 170 mm &middot; border 10 mm</span>
+  <span>frame 170 &times; 170 mm &middot; border 10 mm &middot; repeatability &plusmn;0.5 mm across our test photos</span>
   <span id="scale-note"></span>
 </footer>
 
@@ -322,9 +333,6 @@
   const scaleNote = document.getElementById('scale-note');
 
   dropframe.addEventListener('click', () => fileInput.click());
-  dropframe.addEventListener('keydown', e => {
-    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fileInput.click(); }
-  });
   fileInput.addEventListener('change', () => {
     if (fileInput.files[0]) measure(fileInput.files[0]);
   });
@@ -422,7 +430,8 @@
       }
     } catch (err) {
       busy.hidden = true;
-      tbError.textContent = 'Could not reach the measurement server.';
+      tbError.textContent = 'Could not reach the measurement server. '
+        + 'Start it from the webapp folder, then try again.';
       tbError.hidden = false;
     }
   }

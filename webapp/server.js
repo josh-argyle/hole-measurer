@@ -48,10 +48,13 @@ app.post('/api/measure', upload.single('photo'), (req, res) => {
     imagePath,
     '--json',
   ];
-  const { width, height, border, convexHull } = req.body;
+  const { width, height, border, convexHull, smooth } = req.body;
   if (width) args.push('--width', String(parseFloat(width)));
   if (height) args.push('--height', String(parseFloat(height)));
   if (convexHull === 'true') args.push('--convex-hull');
+  if (smooth !== undefined && smooth !== '') {
+    args.push('--smooth', String(parseFloat(smooth)));
+  }
 
   execFile(UV, args, { timeout: 120000 }, (err, stdout, stderr) => {
     fs.rm(imagePath, { force: true }, () => {});

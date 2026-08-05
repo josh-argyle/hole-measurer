@@ -550,9 +550,12 @@ class ObjectMeasurer:
 
         return best
 
-    def _smooth_contour(self, contour, sigma=2.5, epsilon=2.0):
+    def _smooth_contour(self, contour, strength=2.5):
         """
         Smooth a contour so straight edges draw straight.
+
+        strength sets both the Gaussian sigma and the simplification
+        tolerance; 0 disables smoothing entirely.
 
         Two stages: a circular Gaussian filter along the contour removes
         pixel-level jaggies from thresholding, then Douglas-Peucker
@@ -562,6 +565,11 @@ class ObjectMeasurer:
         Also makes the perimeter honest - stair-stepped pixel edges
         inflate arc length by several percent.
         """
+        if strength <= 0:
+            return contour
+        sigma = strength
+        epsilon = max(1.0, strength * 0.8)
+
         pts = contour.reshape(-1, 2).astype(np.float64)
         if len(pts) < 12:
             return contour
@@ -596,7 +604,8 @@ class ObjectMeasurer:
             return contour
         return approx.astype(np.int32)
 
-    def measure_object(self, warped_image, threshold=200, debug=False, use_convex_hull=False):
+    def measure_object(self, warped_image, threshold=200, debug=False, use_convex_hull=False,
+                       smooth=2.5):
         """
         Measure the object in the calibrated image using adaptive multi-threshold segmentation
 
@@ -690,7 +699,7 @@ class ObjectMeasurer:
                                                           best_candidate['contour'])
             object_contour = self._extend_with_edges(edges, object_contour,
                                                      warped_image.shape)
-            object_contour = self._smooth_contour(object_contour)
+            object_contour = self._smooth_contour(object_contour, strength=smooth)
 
         if debug and not use_convex_hull:
             print(f"\nAdaptive Segmentation Results:")
@@ -851,6 +860,8 @@ def main():
                             '(default: output/<image>_measured.png in the repo)')
     parser.add_argument('--json', action='store_true',
                        help='Print machine-readable JSON result as the last line')
+    parser.add_argument('--smooth', type=float, default=2.5,
+                       help='Contour smoothing strength (0 = off, default 2.5)')
 
     args = parser.parse_args()
 
@@ -882,7 +893,8 @@ def main():
     print("\nMeasuring object...")
     measurer = ObjectMeasurer(frame)
     measurements = measurer.measure_object(warped, threshold=args.threshold,
-                                          debug=args.debug, use_convex_hull=args.convex_hull)
+                                          debug=args.debug, use_convex_hull=args.convex_hull,
+                                          smooth=args.smooth)
 
     if "error" in measurements:
         print(f"Error: {measurements['error']}")

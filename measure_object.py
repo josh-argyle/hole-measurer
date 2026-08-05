@@ -693,9 +693,38 @@ def annotate_measurements(warped_image, measurements):
     out = warped_image.copy()
     h_img, w_img = out.shape[:2]
 
-    cv2.drawContours(out, [measurements['contour']], -1, (0, 255, 0), 3)
-
+    contour = measurements['contour']
     box = measurements['oriented_box'].astype(np.float32)
+
+    # Rotate the view so the object's long axis is vertical, if the rotated
+    # object (with room for dimension labels) still fits inside the window
+    e0, e1 = box[1] - box[0], box[2] - box[1]
+    v = e0 if np.linalg.norm(e0) >= np.linalg.norm(e1) else e1
+    theta = np.degrees(np.arctan2(v[1], v[0]))
+    a = (theta - 90) % 180
+    if a > 90:
+        a -= 180
+    if abs(a) > 2:
+        center = tuple(box.mean(axis=0))
+        M = cv2.getRotationMatrix2D(center, a, 1.0)
+        # Verify direction: the long axis must end up vertical
+        R = M[:, :2]
+        v_rot = R @ v
+        if abs(v_rot[0]) > abs(v_rot[1]):
+            M = cv2.getRotationMatrix2D(center, -a, 1.0)
+
+        pts = contour.reshape(-1, 2).astype(np.float32)
+        pts_rot = pts @ M[:, :2].T + M[:, 2]
+        margin = 40  # room for dimension lines and labels
+        if (pts_rot.min(axis=0) > margin).all() and \
+           (pts_rot[:, 0].max() < w_img - margin) and \
+           (pts_rot[:, 1].max() < h_img - margin):
+            out = cv2.warpAffine(out, M, (w_img, h_img),
+                                 borderMode=cv2.BORDER_REPLICATE)
+            contour = pts_rot.reshape(-1, 1, 2).astype(np.int32)
+            box = box @ M[:, :2].T + M[:, 2]
+
+    cv2.drawContours(out, [contour], -1, (0, 255, 0), 3)
     cv2.polylines(out, [box.astype(np.int32)], True, (255, 0, 0), 2)
 
     font = cv2.FONT_HERSHEY_SIMPLEX

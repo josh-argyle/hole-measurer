@@ -177,6 +177,15 @@
   .tb-row .value small { font-weight: 400; color: var(--graphite); font-size: 0.75rem; }
   .tb-row.dim .value { color: var(--blue); font-size: 1.35rem; }
   .tb-empty { padding: 22px 14px; color: var(--graphite); font-size: 0.85rem; }
+  .tb-downloads { display: flex; gap: 8px; padding: 12px 14px; border-top: 1px solid var(--line); }
+  .tb-downloads a {
+    flex: 1; text-align: center; text-decoration: none;
+    font-family: 'IBM Plex Sans Condensed', sans-serif; font-weight: 600;
+    letter-spacing: 0.08em; font-size: 0.75rem; text-transform: uppercase;
+    color: #fff; background: var(--blue); padding: 9px 0; border-radius: 3px;
+  }
+  .tb-downloads a:hover { background: #1e3cb0; }
+  .tb-downloads a:focus-visible { outline: 2px solid var(--ink); }
   .tb-error {
     padding: 14px; font-size: 0.85rem; color: var(--error);
     border-top: 2px solid var(--error); background: #fdf3f2;
@@ -255,6 +264,10 @@
     </div>
     <div id="tb-body">
       <div class="tb-empty">Waiting for a photo.</div>
+    </div>
+    <div class="tb-downloads" id="tb-downloads" hidden>
+      <a id="dl-dxf" download>DXF for CAD</a>
+      <a id="dl-svg" download>SVG</a>
     </div>
     <div class="tb-error" id="tb-error" hidden></div>
 
@@ -373,6 +386,15 @@
         row('Perimeter', data.perimeter_mm.toFixed(2), 'mm') +
         row('Area', data.area_mm2.toFixed(1), 'mm&sup2;');
       scaleNote.textContent = 'scale ' + data.mm_per_pixel.toFixed(4) + ' mm/px';
+
+      const downloads = document.getElementById('tb-downloads');
+      if (data.dxf_url) {
+        document.getElementById('dl-dxf').href = data.dxf_url;
+        document.getElementById('dl-svg').href = data.svg_url;
+        downloads.hidden = false;
+      } else {
+        downloads.hidden = true;
+      }
     } catch (err) {
       busy.hidden = true;
       tbError.textContent = 'Could not reach the measurement server.';

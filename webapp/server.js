@@ -79,6 +79,14 @@ app.post('/api/measure', upload.single('photo'), (req, res) => {
 
     result.image_url = '/output/' + path.basename(result.output_image);
     delete result.output_image;
+    if (result.dxf) {
+      result.dxf_url = '/output/' + path.basename(result.dxf);
+      delete result.dxf;
+    }
+    if (result.svg) {
+      result.svg_url = '/output/' + path.basename(result.svg);
+      delete result.svg;
+    }
     res.json(result);
   });
 });

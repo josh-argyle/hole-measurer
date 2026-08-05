@@ -796,6 +796,45 @@ class ObjectMeasurer:
         return measurements
 
 
+def export_outline(measurements, image_height_px, base_path):
+    """
+    Export the measured outline as CAD-ready vector files in millimetres:
+    a DXF (R12 closed polyline, importable by Fusion 360 / FreeCAD /
+    Tinkercad for extruding) and an SVG. Returns (dxf_path, svg_path).
+    """
+    scale = 10.0  # warped px per mm
+    pts = measurements['contour'].reshape(-1, 2).astype(np.float64)
+    # DXF is Y-up; flip so the part isn't mirrored and stays positive
+    mm = [(x / scale, (image_height_px - y) / scale) for x, y in pts]
+
+    dxf_path = str(base_path) + '_outline.dxf'
+    lines = ['0', 'SECTION', '2', 'ENTITIES',
+             '0', 'POLYLINE', '8', '0', '66', '1', '70', '1']
+    for x, y in mm:
+        lines += ['0', 'VERTEX', '8', '0',
+                  '10', f'{x:.3f}', '20', f'{y:.3f}']
+    lines += ['0', 'SEQEND', '0', 'ENDSEC', '0', 'EOF']
+    with open(dxf_path, 'w') as f:
+        f.write('\n'.join(lines) + '\n')
+
+    svg_path = str(base_path) + '_outline.svg'
+    xs = [p[0] for p in mm]
+    ys = [image_height_px / scale - p[1] for p in mm]  # SVG is Y-down
+    w = max(xs) - min(xs)
+    h = max(ys) - min(ys)
+    d = 'M ' + ' L '.join(f'{x - min(xs):.3f},{y - min(ys):.3f}'
+                          for x, y in zip(xs, ys)) + ' Z'
+    with open(svg_path, 'w') as f:
+        f.write(
+            f'<svg xmlns="http://www.w3.org/2000/svg" '
+            f'width="{w:.2f}mm" height="{h:.2f}mm" '
+            f'viewBox="0 0 {w:.3f} {h:.3f}">\n'
+            f'  <path d="{d}" fill="none" stroke="black" stroke-width="0.2"/>\n'
+            f'</svg>\n')
+
+    return dxf_path, svg_path
+
+
 def annotate_measurements(warped_image, measurements):
     """
     Draw the contour, bounding box, and dimension labels on each edge
@@ -994,6 +1033,10 @@ def main():
         cv2.imwrite(str(out_path), output)
         print(f"\nSaved annotated output to: {out_path}")
 
+        base = out_path.parent / out_path.stem.replace('_measured', '')
+        dxf_path, svg_path = export_outline(measurements, warped.shape[0], base)
+        print(f"Saved CAD outline to: {dxf_path} and {svg_path}")
+
     if args.json:
         import json
         if "error" in measurements:
@@ -1007,6 +1050,8 @@ def main():
                 "area_mm2": round(measurements['area_mm2'], 2),
                 "mm_per_pixel": round(frame.mm_per_pixel, 5),
                 "output_image": str(out_path),
+                "dxf": dxf_path,
+                "svg": svg_path,
             }
         print(json.dumps(payload))
 

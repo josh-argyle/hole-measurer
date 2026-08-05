@@ -243,9 +243,13 @@ class ObjectMeasurer:
 
         return binary
 
-    def _score_contour(self, contour, threshold_value, image_shape):
+    def _score_contour(self, contour, gradient_mag, edges, image_shape):
         """
         Score a contour based on multiple quality metrics
+
+        Args:
+            gradient_mag: Precomputed gradient magnitude image (Sobel)
+            edges: Precomputed Canny edge map (frame border masked off)
 
         Returns a score between 0 and 1 (higher = better object candidate)
         """
@@ -274,22 +278,44 @@ class ObjectMeasurer:
         aspect_penalty = 1.0 if aspect_ratio < 15 else (15.0 / aspect_ratio)
         completeness_score = extent * aspect_penalty
 
-        # 4. CONFIDENCE SCORE - Prefer mid-range thresholds (more reliable)
-        threshold_diff = abs(threshold_value - 210)
-        confidence_score = np.exp(-(threshold_diff**2) / (2 * 40**2))
+        # 4. SHARPNESS SCORE - Real object edges are sharp, shadows are soft.
+        # Use the 25th percentile of gradient magnitude along the boundary:
+        # a contour that includes any soft (shadow) stretch scores low even
+        # if the rest of its outline is crisp.
+        boundary = contour.reshape(-1, 2)
+        step = max(1, len(boundary) // 200)
+        samples = boundary[::step]
+        ys = np.clip(samples[:, 1], 0, h - 1)
+        xs = np.clip(samples[:, 0], 0, w - 1)
+        boundary_grad = float(np.percentile(gradient_mag[ys, xs], 25))
+        sharpness_score = min(1.0, boundary_grad / 40.0)
+
+        # 5. EDGE COVERAGE - Fraction of the image's crisp edges that lie
+        # inside this candidate. The whole object contains (nearly) all of
+        # them; a fragment of it contains few.
+        total_edges = np.count_nonzero(edges)
+        if total_edges > 0:
+            mask = np.zeros((h, w), dtype=np.uint8)
+            cv2.drawContours(mask, [contour], -1, 255, -1)
+            mask = cv2.dilate(mask, np.ones((7, 7), np.uint8))
+            coverage_score = np.count_nonzero(edges[mask > 0]) / total_edges
+        else:
+            coverage_score = 0.5
 
         total_score = (
-            0.35 * size_score +
-            0.30 * shape_score +
-            0.25 * completeness_score +
-            0.10 * confidence_score
+            0.10 * size_score +
+            0.10 * shape_score +
+            0.05 * completeness_score +
+            0.40 * sharpness_score +
+            0.35 * coverage_score
         )
 
         return total_score, {
             'size': size_score,
             'shape': shape_score,
             'completeness': completeness_score,
-            'confidence': confidence_score,
+            'sharpness': sharpness_score,
+            'coverage': coverage_score,
             'area_ratio': area_ratio,
             'solidity': solidity,
             'extent': extent
@@ -350,7 +376,17 @@ class ObjectMeasurer:
             if overlap > best_overlap:
                 best, best_overlap = c, overlap
 
-        return best if best_overlap > 0 else contour
+        if best_overlap == 0:
+            return contour
+
+        # Sanity guard: refinement corrects sub-mm blur bias, so the area
+        # should barely change. A large growth means it latched onto a
+        # shadow or neighbouring region - keep the original instead.
+        orig_area = max(cv2.contourArea(contour), 1)
+        if not (0.6 < cv2.contourArea(best) / orig_area < 1.3):
+            return contour
+
+        return best
 
     def measure_object(self, warped_image, threshold=200, debug=False, use_convex_hull=False):
         """
@@ -376,7 +412,26 @@ class ObjectMeasurer:
         max_height = h * 0.95
 
         # ADAPTIVE MULTI-THRESHOLD SEGMENTATION
-        thresholds_to_try = [170, 190, 210, 230, 245]
+        # Thresholds relative to the actual background brightness, so dim or
+        # bright photos both work. Median over the window is dominated by
+        # background pixels.
+        gray = cv2.cvtColor(warped_image, cv2.COLOR_BGR2GRAY)
+        background = float(np.median(gray))
+        thresholds_to_try = sorted({max(30, int(background * f))
+                                    for f in (0.50, 0.62, 0.74, 0.85, 0.93)})
+
+        # Precompute gradient magnitude for boundary-sharpness scoring
+        gx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
+        gy = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
+        gradient_mag = cv2.magnitude(gx, gy)
+
+        # Canny edge map for coverage scoring, ignoring warp artifacts at
+        # the window border
+        edges = cv2.Canny(gray, 50, 150)
+        edges[:edge_margin, :] = 0
+        edges[-edge_margin:, :] = 0
+        edges[:, :edge_margin] = 0
+        edges[:, -edge_margin:] = 0
 
         all_candidates = []
 
@@ -394,7 +449,8 @@ class ObjectMeasurer:
                 is_not_full_frame = (cw < max_width and ch < max_height)
 
                 if is_away_from_edges and is_reasonable_size and is_not_full_frame:
-                    score, metrics = self._score_contour(contour, thresh, warped_image.shape)
+                    score, metrics = self._score_contour(contour, gradient_mag,
+                                                         edges, warped_image.shape)
 
                     all_candidates.append({
                         'contour': contour,

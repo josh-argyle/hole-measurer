@@ -718,6 +718,15 @@
     if (!t) return;
     e.preventDefault();
     e.stopPropagation();
+    // second press of a double-click deletes (pointer capture during drags
+    // retargets real dblclick events away from the node, so detect it here)
+    if (e.detail >= 2) {
+      if (edit.pts.length > 3) {
+        edit.pts.splice(+t.dataset.i, 1);
+        render();
+      }
+      return;
+    }
     startNodeDrag(+t.dataset.i, e);
   });
 
@@ -764,15 +773,6 @@
     }
   }));
 
-  // double-click node to delete
-  nodesEl.addEventListener('dblclick', e => {
-    const t = e.target.closest('.node');
-    if (!t) return;
-    e.stopPropagation();
-    if (edit.pts.length <= 3) return;
-    edit.pts.splice(+t.dataset.i, 1);
-    render();
-  });
 
   $('btn-reset').addEventListener('click', () => {
     edit.pts = edit.orig.map(p => [p[0], p[1]]);

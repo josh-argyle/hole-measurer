@@ -659,8 +659,38 @@ class ObjectMeasurer:
             return contour
         return approx.astype(np.int32)
 
+    @staticmethod
+    def _select_distinct(all_candidates, max_objects=12):
+        """
+        Pick the set of distinct objects from the candidate pool. The same
+        physical object appears once per contrast level, so candidates are
+        taken best-score-first and skipped when they overlap one already
+        picked. Weak leftovers (noise blobs) are dropped relative to the
+        best score.
+        """
+        ranked = sorted(all_candidates, key=lambda c: c['score'], reverse=True)
+        best_score = ranked[0]['score']
+        picked = []
+        for cand in ranked:
+            if cand['score'] < max(0.30, 0.5 * best_score):
+                continue
+            x, y, cw, ch = cv2.boundingRect(cand['contour'])
+            duplicate = False
+            for p in picked:
+                px, py, pw, ph = p['bbox']
+                ix = max(0, min(x + cw, px + pw) - max(x, px))
+                iy = max(0, min(y + ch, py + ph) - max(y, py))
+                if ix * iy > 0.3 * min(cw * ch, pw * ph):
+                    duplicate = True
+                    break
+            if not duplicate:
+                picked.append(dict(cand, bbox=(x, y, cw, ch)))
+                if len(picked) >= max_objects:
+                    break
+        return picked
+
     def measure_object(self, warped_image, threshold=200, debug=False, use_convex_hull=False,
-                       smooth=2.5, min_contrast=0):
+                       smooth=2.5, min_contrast=0, multi=False):
         """
         Measure the object in the calibrated image using adaptive multi-threshold segmentation
 
@@ -669,6 +699,7 @@ class ObjectMeasurer:
             threshold: Base threshold (used as fallback, but multi-threshold is primary)
             debug: Show debug visualizations
             use_convex_hull: If True, compute convex hull of all detected parts (for hollow objects)
+            multi: If True, detect every distinct object instead of only the best one
 
         Returns:
             Dictionary with measurements
@@ -746,53 +777,85 @@ class ObjectMeasurer:
 
             all_points = np.array(all_points, dtype=np.float32)
             hull = cv2.convexHull(all_points)
-            object_contour = hull.reshape((-1, 1, 2)).astype(np.int32)
+            final_contours = [hull.reshape((-1, 1, 2)).astype(np.int32)]
 
             if debug:
                 print(f"\n  Convex Hull Mode: Combined {len(all_candidates)} parts into single hull")
         else:
-            best_candidate = max(all_candidates, key=lambda x: x['score'])
-            object_contour = self._refine_contour_halfmax(warped_image,
-                                                          best_candidate['contour'])
-            object_contour = self._extend_with_edges(edges, object_contour,
-                                                     warped_image.shape)
-            object_contour = self._smooth_contour(object_contour, strength=smooth)
+            if multi:
+                picked = self._select_distinct(all_candidates)
+            else:
+                picked = [max(all_candidates, key=lambda x: x['score'])]
 
-        if debug and not use_convex_hull:
-            print(f"\nAdaptive Segmentation Results:")
-            print(f"  Tried {len(deltas_to_try)} contrast levels, found {len(all_candidates)} candidates")
-            print(f"  Best: delta={best_candidate['delta']}, score={best_candidate['score']:.3f}")
+            final_contours = []
+            for cand in picked:
+                c = self._refine_contour_halfmax(warped_image, cand['contour'])
+                c = self._extend_with_edges(edges, c, warped_image.shape)
+                c = self._smooth_contour(c, strength=smooth)
+                final_contours.append(c)
 
-        # Calculate measurements in pixels
-        perimeter_pixels = cv2.arcLength(object_contour, closed=True)
-        area_pixels = cv2.contourArea(object_contour)
+            # Edge extension can make two picks grow into the same object;
+            # keep only the larger of any overlapping pair
+            if len(final_contours) > 1:
+                kept = []
+                for c in sorted(final_contours, key=cv2.contourArea, reverse=True):
+                    x, y, cw, ch = cv2.boundingRect(c)
+                    dup = False
+                    for k in kept:
+                        kx, ky, kw, kh = cv2.boundingRect(k)
+                        ix = max(0, min(x + cw, kx + kw) - max(x, kx))
+                        iy = max(0, min(y + ch, ky + kh) - max(y, ky))
+                        if ix * iy > 0.3 * min(cw * ch, kw * kh):
+                            dup = True
+                            break
+                    if not dup:
+                        kept.append(c)
+                final_contours = kept
 
-        x, y, bw, bh = cv2.boundingRect(object_contour)
-
-        # Oriented bounding box: the smallest rectangle at any angle, so the
-        # reported length/width follow the object, not the photo axes
-        (rcx, rcy), (rw, rh), rangle = cv2.minAreaRect(object_contour)
-        length_px, width_px = max(rw, rh), min(rw, rh)
-        rect_box = cv2.boxPoints(((rcx, rcy), (rw, rh), rangle))
+            if debug:
+                print(f"\nAdaptive Segmentation Results:")
+                print(f"  Tried {len(deltas_to_try)} contrast levels, found {len(all_candidates)} candidates")
+                print(f"  Selected {len(final_contours)} object(s)")
 
         scale = 10  # pixels per mm (from warp_to_calibrated_view)
 
-        measurements = {
-            "perimeter_mm": perimeter_pixels / scale,
-            "area_mm2": area_pixels / (scale * scale),
-            "length_mm": length_px / scale,
-            "width_mm": width_px / scale,
-            "bounding_box_width_mm": bw / scale,
-            "bounding_box_height_mm": bh / scale,
-            "contour": object_contour,
-            "bounding_box": (x, y, bw, bh),
-            "oriented_box": rect_box,
-        }
+        def contour_metrics(object_contour):
+            perimeter_pixels = cv2.arcLength(object_contour, closed=True)
+            area_pixels = cv2.contourArea(object_contour)
+            x, y, bw, bh = cv2.boundingRect(object_contour)
+
+            # Oriented bounding box: the smallest rectangle at any angle, so
+            # the reported length/width follow the object, not the photo axes
+            (rcx, rcy), (rw, rh), rangle = cv2.minAreaRect(object_contour)
+            length_px, width_px = max(rw, rh), min(rw, rh)
+            rect_box = cv2.boxPoints(((rcx, rcy), (rw, rh), rangle))
+
+            return {
+                "perimeter_mm": perimeter_pixels / scale,
+                "area_mm2": area_pixels / (scale * scale),
+                "length_mm": length_px / scale,
+                "width_mm": width_px / scale,
+                "bounding_box_width_mm": bw / scale,
+                "bounding_box_height_mm": bh / scale,
+                "contour": object_contour,
+                "bounding_box": (x, y, bw, bh),
+                "oriented_box": rect_box,
+            }
+
+        objects = [contour_metrics(c) for c in final_contours]
+        # Reading order: top-to-bottom in ~30mm bands, then left-to-right
+        objects.sort(key=lambda o: (o['bounding_box'][1] // 300,
+                                    o['bounding_box'][0]))
+
+        measurements = dict(objects[0])
+        measurements['objects'] = objects
 
         if debug:
             debug_img = warped_image.copy()
-            cv2.drawContours(debug_img, [object_contour], -1, (0, 255, 0), 2)
-            cv2.rectangle(debug_img, (x, y), (x + bw, y + bh), (255, 0, 0), 2)
+            for o in objects:
+                cv2.drawContours(debug_img, [o['contour']], -1, (0, 255, 0), 2)
+                x, y, bw, bh = o['bounding_box']
+                cv2.rectangle(debug_img, (x, y), (x + bw, y + bh), (255, 0, 0), 2)
             cv2.imshow('Object Measurement', debug_img)
 
         return measurements
@@ -805,36 +868,91 @@ def export_outline(measurements, image_height_px, base_path):
     Tinkercad for extruding) and an SVG. Returns (dxf_path, svg_path).
     """
     scale = 10.0  # warped px per mm
-    pts = measurements['contour'].reshape(-1, 2).astype(np.float64)
+    contours = [o['contour'] for o in measurements.get('objects')
+                or [measurements]]
     # DXF is Y-up; flip so the part isn't mirrored and stays positive
-    mm = [(x / scale, (image_height_px - y) / scale) for x, y in pts]
+    outlines_mm = [[(x / scale, (image_height_px - y) / scale)
+                    for x, y in c.reshape(-1, 2).astype(np.float64)]
+                   for c in contours]
 
     dxf_path = str(base_path) + '_outline.dxf'
-    lines = ['0', 'SECTION', '2', 'ENTITIES',
-             '0', 'POLYLINE', '8', '0', '66', '1', '70', '1']
-    for x, y in mm:
-        lines += ['0', 'VERTEX', '8', '0',
-                  '10', f'{x:.3f}', '20', f'{y:.3f}']
-    lines += ['0', 'SEQEND', '0', 'ENDSEC', '0', 'EOF']
+    lines = ['0', 'SECTION', '2', 'ENTITIES']
+    for mm in outlines_mm:
+        lines += ['0', 'POLYLINE', '8', '0', '66', '1', '70', '1']
+        for x, y in mm:
+            lines += ['0', 'VERTEX', '8', '0',
+                      '10', f'{x:.3f}', '20', f'{y:.3f}']
+        lines += ['0', 'SEQEND']
+    lines += ['0', 'ENDSEC', '0', 'EOF']
     with open(dxf_path, 'w') as f:
         f.write('\n'.join(lines) + '\n')
 
     svg_path = str(base_path) + '_outline.svg'
-    xs = [p[0] for p in mm]
-    ys = [image_height_px / scale - p[1] for p in mm]  # SVG is Y-down
-    w = max(xs) - min(xs)
-    h = max(ys) - min(ys)
-    d = 'M ' + ' L '.join(f'{x - min(xs):.3f},{y - min(ys):.3f}'
-                          for x, y in zip(xs, ys)) + ' Z'
+    all_x = [p[0] for mm in outlines_mm for p in mm]
+    all_y = [image_height_px / scale - p[1] for mm in outlines_mm for p in mm]
+    x0, y0 = min(all_x), min(all_y)
+    w = max(all_x) - x0
+    h = max(all_y) - y0
+    paths = []
+    for mm in outlines_mm:
+        xs = [p[0] for p in mm]
+        ys = [image_height_px / scale - p[1] for p in mm]  # SVG is Y-down
+        d = 'M ' + ' L '.join(f'{x - x0:.3f},{y - y0:.3f}'
+                              for x, y in zip(xs, ys)) + ' Z'
+        paths.append(f'  <path d="{d}" fill="none" stroke="black" stroke-width="0.2"/>')
     with open(svg_path, 'w') as f:
         f.write(
             f'<svg xmlns="http://www.w3.org/2000/svg" '
             f'width="{w:.2f}mm" height="{h:.2f}mm" '
             f'viewBox="0 0 {w:.3f} {h:.3f}">\n'
-            f'  <path d="{d}" fill="none" stroke="black" stroke-width="0.2"/>\n'
-            f'</svg>\n')
+            + '\n'.join(paths) + '\n</svg>\n')
 
     return dxf_path, svg_path
+
+
+def annotate_multi(warped_image, objects):
+    """
+    Annotate several objects: each gets its outline, dotted oriented box,
+    and a numbered size label. No upright rotation (it only makes sense
+    for a single object).
+    """
+    out = warped_image.copy()
+    h_img, w_img = out.shape[:2]
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    fscale = max(0.6, min(w_img, h_img) / 1400.0)
+    fthick = max(1, int(round(fscale * 2)))
+    blue = (255, 0, 0)
+
+    for i, o in enumerate(objects, start=1):
+        cv2.drawContours(out, [o['contour']], -1, (0, 255, 0), 3)
+        box = o['oriented_box'].astype(np.float64)
+        loop = np.vstack([box, box[:1]])
+        for p1, p2 in zip(loop[:-1], loop[1:]):
+            seg = p2 - p1
+            length = np.linalg.norm(seg)
+            if length < 1:
+                continue
+            direction = seg / length
+            pos = 0.0
+            while pos < length:
+                a = p1 + direction * pos
+                b = p1 + direction * min(pos + 5, length)
+                cv2.line(out, tuple(a.astype(int)), tuple(b.astype(int)), blue, 2)
+                pos += 12
+
+        text = f"{i}: {o['length_mm']:.1f} x {o['width_mm']:.1f} mm"
+        cx, cy = box.mean(axis=0)
+        cy = box[:, 1].min() - 18
+        (tw, th), base = cv2.getTextSize(text, font, fscale, fthick)
+        cx = int(np.clip(cx, tw // 2 + 6, w_img - tw // 2 - 6))
+        cy = int(np.clip(cy, th + 6, h_img - base - 6))
+        cv2.rectangle(out, (cx - tw // 2 - 5, cy - th - 5),
+                      (cx + tw // 2 + 5, cy + base + 5), (255, 255, 255), -1)
+        cv2.rectangle(out, (cx - tw // 2 - 5, cy - th - 5),
+                      (cx + tw // 2 + 5, cy + base + 5), blue, 1)
+        cv2.putText(out, text, (cx - tw // 2, cy), font, fscale, blue, fthick)
+
+    return out
 
 
 def annotate_measurements(warped_image, measurements):
@@ -842,6 +960,10 @@ def annotate_measurements(warped_image, measurements):
     Draw the contour, bounding box, and dimension labels on each edge
     of the bounding box. Returns the annotated image.
     """
+    objects = measurements.get('objects') or [measurements]
+    if len(objects) > 1:
+        return annotate_multi(warped_image, objects)
+
     out = warped_image.copy()
     h_img, w_img = out.shape[:2]
 
@@ -979,6 +1101,8 @@ def main():
     parser.add_argument('--min-contrast', type=float, default=0,
                        help='Shadow cut: minimum difference from background to count '
                             'as object (0 = auto, raise to exclude soft shadows)')
+    parser.add_argument('--multi', action='store_true',
+                       help='Detect every distinct object in the frame, not just the best one')
 
     args = parser.parse_args()
 
@@ -1011,19 +1135,23 @@ def main():
     measurer = ObjectMeasurer(frame)
     measurements = measurer.measure_object(warped, threshold=args.threshold,
                                           debug=args.debug, use_convex_hull=args.convex_hull,
-                                          smooth=args.smooth, min_contrast=args.min_contrast)
+                                          smooth=args.smooth, min_contrast=args.min_contrast,
+                                          multi=args.multi)
 
     if "error" in measurements:
         print(f"Error: {measurements['error']}")
         print("Try adjusting the --threshold parameter")
     else:
+        objects = measurements.get('objects', [measurements])
         print("\n" + "="*50)
-        print("FINAL MEASUREMENTS")
+        print("FINAL MEASUREMENTS" +
+              (f" ({len(objects)} objects)" if len(objects) > 1 else ""))
         print("="*50)
-        print(f"Length x Width: {measurements['length_mm']:.2f} x {measurements['width_mm']:.2f} mm (oriented)")
-        print(f"Perimeter:      {measurements['perimeter_mm']:.2f} mm")
-        print(f"Area:           {measurements['area_mm2']:.2f} mm²")
-        print(f"Bounding Box:   {measurements['bounding_box_width_mm']:.2f} x {measurements['bounding_box_height_mm']:.2f} mm (photo axes)")
+        for i, o in enumerate(objects, start=1):
+            prefix = f"Object {i}: " if len(objects) > 1 else ""
+            print(f"{prefix}Length x Width: {o['length_mm']:.2f} x {o['width_mm']:.2f} mm (oriented)")
+            print(f"{prefix}Perimeter:      {o['perimeter_mm']:.2f} mm")
+            print(f"{prefix}Area:           {o['area_mm2']:.2f} mm²")
         print("="*50)
 
     out_path = None
@@ -1065,6 +1193,13 @@ def main():
                 "warped_w": warped.shape[1],
                 "warped_h": warped.shape[0],
                 "contour_px": measurements['contour'].reshape(-1, 2).tolist(),
+                "objects": [{
+                    "length_mm": round(o['length_mm'], 2),
+                    "width_mm": round(o['width_mm'], 2),
+                    "perimeter_mm": round(o['perimeter_mm'], 2),
+                    "area_mm2": round(o['area_mm2'], 2),
+                    "contour_px": o['contour'].reshape(-1, 2).tolist(),
+                } for o in measurements.get('objects', [measurements])],
             }
         print(json.dumps(payload))
 

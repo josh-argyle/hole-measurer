@@ -31,6 +31,7 @@ const upload = multer({
 const app = express();
 app.use(express.static(path.join(__dirname, 'public')));
 app.use('/output', express.static(OUTPUT_DIR));
+app.use(express.json({ limit: '20mb' }));
 
 app.post('/api/measure', upload.single('photo'), (req, res) => {
   if (!req.file) {
@@ -58,6 +59,7 @@ app.post('/api/measure', upload.single('photo'), (req, res) => {
   if (req.body.minContrast !== undefined && req.body.minContrast !== '') {
     args.push('--min-contrast', String(parseFloat(req.body.minContrast)));
   }
+  if (req.body.multi === 'true') args.push('--multi');
 
   execFile(UV, args, { timeout: 120000 }, (err, stdout, stderr) => {
     fs.rm(imagePath, { force: true }, () => {});
@@ -94,6 +96,50 @@ app.post('/api/measure', upload.single('photo'), (req, res) => {
       result.warped_url = '/output/' + path.basename(result.warped_image);
       delete result.warped_image;
     }
+    res.json(result);
+  });
+});
+
+// Case / organizer STL generation from the (possibly edited) outlines
+app.post('/api/case', (req, res) => {
+  const spec = req.body;
+  if (!spec || !Array.isArray(spec.objects) || spec.objects.length === 0) {
+    return res.status(400).json({ ok: false, error: 'No outlines received' });
+  }
+
+  const name = String(spec.name || 'case').replace(/[^\w.-]+/g, '_');
+  const CASE_MODES = new Set(['block', 'gridfinity', 'shell', 'offset-dxf']);
+  const mode = CASE_MODES.has(spec.mode) ? spec.mode : 'block';
+  spec.mode = mode;
+  const ext = mode === 'offset-dxf' ? '.dxf' : '.stl';
+  const outPath = path.join(OUTPUT_DIR, `${name}_${mode}${ext}`);
+  const specPath = path.join(UPLOAD_DIR, `case-${Date.now()}.json`);
+  fs.writeFileSync(specPath, JSON.stringify(spec));
+
+  const args = [
+    'run', '--with', 'manifold3d', '--with', 'numpy', 'python',
+    path.join(REPO_ROOT, 'generate_case.py'),
+    specPath, outPath,
+  ];
+  execFile(UV, args, { timeout: 120000 }, (err, stdout, stderr) => {
+    fs.rm(specPath, { force: true }, () => {});
+
+    const lines = (stdout || '').trim().split('\n');
+    let result = null;
+    for (let i = lines.length - 1; i >= 0; i--) {
+      try { result = JSON.parse(lines[i]); break; } catch (_) { /* keep looking */ }
+    }
+    if (!result) {
+      console.error('Case generator failed:', err, stderr);
+      return res.status(500).json({
+        ok: false,
+        error: 'The case generator did not return a result - check the server log',
+      });
+    }
+    if (!result.ok) return res.json(result);
+
+    result.file_url = '/output/' + path.basename(outPath);
+    delete result.out;
     res.json(result);
   });
 });

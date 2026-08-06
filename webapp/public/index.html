@@ -147,6 +147,7 @@
   .editor.panning { cursor: grabbing; }
   .editor .outline {
     fill: none; stroke: var(--green); stroke-width: 3; vector-effect: non-scaling-stroke;
+    pointer-events: none;
   }
   .editor .hitpath {
     fill: none; stroke: transparent; stroke-width: 14; cursor: copy;
@@ -274,12 +275,28 @@
   .opt-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 14px; }
   .opt { display: flex; flex-direction: column; gap: 4px; }
   .opt label { font-size: 0.75rem; color: var(--graphite); }
-  .opt input[type=number] {
+  .opt input[type=number], .opt select {
     font-family: 'IBM Plex Mono', monospace;
     padding: 7px 9px; border: 1px solid var(--line); border-radius: 3px;
     background: #fff; font-size: 0.9rem; width: 100%;
   }
-  .opt input[type=number]:focus-visible { outline: 2px solid var(--blue); }
+  .opt input[type=number]:focus-visible, .opt select:focus-visible { outline: 2px solid var(--blue); }
+  .case-actions { grid-column: 1 / -1; display: flex; gap: 8px; }
+  .case-actions button {
+    flex: 1;
+    font-family: 'IBM Plex Sans Condensed', sans-serif; font-weight: 600;
+    letter-spacing: 0.08em; font-size: 0.75rem; text-transform: uppercase;
+    color: #fff; background: var(--blue); border: 0; padding: 9px 0;
+    border-radius: 3px; cursor: pointer;
+  }
+  .case-actions button:hover { background: #1e3cb0; }
+  .case-actions button:focus-visible { outline: 2px solid var(--ink); }
+  .case-actions button:disabled { background: var(--graphite); cursor: wait; }
+  .case-note {
+    grid-column: 1 / -1;
+    font-family: 'IBM Plex Mono', monospace; font-size: 0.72rem;
+    color: var(--graphite); min-height: 1em;
+  }
   .opt input[type=range] { accent-color: var(--blue); width: 100%; }
   .opt .range-label { display: flex; justify-content: space-between; }
   .opt .range-label output { font-family: 'IBM Plex Mono', monospace; color: var(--ink); }
@@ -327,9 +344,7 @@
              role="img" aria-label="Calibrated top-down view with editable outline">
           <g id="world">
             <image id="warped-image" x="0" y="0"></image>
-            <polygon class="obox" id="obox"></polygon>
-            <polygon class="hitpath" id="hitpath"></polygon>
-            <polygon class="outline" id="outline"></polygon>
+            <g id="shapes"></g>
             <g id="nodes"></g>
             <g id="alignlayer"></g>
           </g>
@@ -399,6 +414,49 @@
           <input type="checkbox" id="opt-hull">
           <label for="opt-hull">Convex hull (hollow objects: pliers, scissors)</label>
         </div>
+        <div class="opt-check">
+          <input type="checkbox" id="opt-multi">
+          <label for="opt-multi">Detect multiple objects</label>
+        </div>
+      </div>
+    </details>
+
+    <details class="options" id="case-panel" hidden>
+      <summary>Case / insert</summary>
+      <div class="opt-grid">
+        <div class="opt opt-full">
+          <label for="case-mode">Type</label>
+          <select id="case-mode">
+            <option value="gridfinity">Gridfinity insert</option>
+            <option value="block">Plain block</option>
+            <option value="shell">Form-fitting shell</option>
+          </select>
+        </div>
+        <div class="opt">
+          <label for="case-clearance">Clearance (mm)</label>
+          <input type="number" id="case-clearance" value="0.3" step="0.05" min="0">
+        </div>
+        <div class="opt">
+          <label for="case-depth">Pocket depth (mm)</label>
+          <input type="number" id="case-depth" value="15" step="0.5" min="1">
+        </div>
+        <div class="opt">
+          <label for="case-floor">Floor (mm)</label>
+          <input type="number" id="case-floor" value="2" step="0.5" min="0.5">
+        </div>
+        <div class="opt">
+          <label for="case-margin">Margin (mm)</label>
+          <input type="number" id="case-margin" value="5" step="0.5" min="0">
+        </div>
+        <div class="opt">
+          <label for="case-wall">Shell wall (mm)</label>
+          <input type="number" id="case-wall" value="1.6" step="0.1" min="0.4">
+        </div>
+        <div class="case-actions">
+          <button type="button" id="btn-stl">Generate STL</button>
+          <button type="button" id="btn-offsetdxf">Offset DXF</button>
+        </div>
+        <span class="case-note" id="case-note"></span>
       </div>
     </details>
   </aside>
@@ -413,8 +471,9 @@
   const $ = id => document.getElementById(id);
   const dropframe = $('dropframe'), pick = $('pick'), fileInput = $('file-input');
   const windowEl = $('window'), warpedImage = $('warped-image'), busy = $('busy');
-  const editorSvg = $('editor'), outlineEl = $('outline'), hitpathEl = $('hitpath');
-  const oboxEl = $('obox'), nodesEl = $('nodes'), worldEl = $('world');
+  const editorSvg = $('editor'), shapesEl = $('shapes');
+  const nodesEl = $('nodes'), worldEl = $('world');
+  const SVG_NS = 'http://www.w3.org/2000/svg';
   const tbBody = $('tb-body'), tbError = $('tb-error'), tbFile = $('tb-file');
   const tbEdit = $('tb-edit'), tbDownloads = $('tb-downloads'), scaleNote = $('scale-note');
 
@@ -451,6 +510,8 @@
     shadowVal.textContent = shadowSlider.value === '0' ? 'auto' : shadowSlider.value;
   });
   shadowSlider.addEventListener('change', () => { if (lastFile) measure(lastFile); });
+  $('opt-multi').addEventListener('change', () => { if (lastFile) measure(lastFile); });
+  $('opt-hull').addEventListener('change', () => { if (lastFile) measure(lastFile); });
 
   // ---------- geometry (all in warped px, 10 px per mm) ----------
   const PX_PER_MM = 10;
@@ -516,12 +577,18 @@
   }
 
   // ---------- editor state ----------
-  let edit = null;  // { pts, orig, w, h, name }
+  let edit = null;  // { objs: [{pts, orig}], shapeEls, w, h, name }
 
   function enterEditor(data, fileName) {
+    const contours = (data.objects && data.objects.length)
+      ? data.objects.map(o => o.contour_px)
+      : [data.contour_px];
     edit = {
-      pts: data.contour_px.map(p => [p[0], p[1]]),
-      orig: data.contour_px.map(p => [p[0], p[1]]),
+      objs: contours.map(c => ({
+        pts: c.map(p => [p[0], p[1]]),
+        orig: c.map(p => [p[0], p[1]]),
+      })),
+      shapeEls: [],
       w: data.warped_w,
       h: data.warped_h,
       name: fileName.replace(/\.[^.]+$/, ''),
@@ -535,7 +602,28 @@
     windowEl.hidden = false;
     tbEdit.hidden = false;
     tbDownloads.hidden = false;
+    $('case-panel').hidden = false;
+    $('case-note').textContent = '';
+    buildShapes();
     render();
+  }
+
+  // One group of obox / hitpath / outline polygons per detected object
+  function buildShapes() {
+    shapesEl.textContent = '';
+    edit.shapeEls = edit.objs.map((_, o) => {
+      const g = document.createElementNS(SVG_NS, 'g');
+      const mk = cls => {
+        const p = document.createElementNS(SVG_NS, 'polygon');
+        p.setAttribute('class', cls);
+        p.dataset.o = o;
+        g.appendChild(p);
+        return p;
+      };
+      const els = { obox: mk('obox'), hitpath: mk('hitpath'), outline: mk('outline') };
+      shapesEl.appendChild(g);
+      return els;
+    });
   }
 
   function svgPoint(evt) {
@@ -637,9 +725,11 @@
     const p = worldPoint(e);
     // snap to the nearest outline node if one is close
     let pt = [p.x, p.y], best = 15 / viewScale();
-    for (const q of edit.pts) {
-      const d = Math.hypot(q[0] - p.x, q[1] - p.y);
-      if (d < best) { best = d; pt = [q[0], q[1]]; }
+    for (const obj of edit.objs) {
+      for (const q of obj.pts) {
+        const d = Math.hypot(q[0] - p.x, q[1] - p.y);
+        if (d < best) { best = d; pt = [q[0], q[1]]; }
+      }
     }
     alignPts.push(pt);
     drawAlignMarkers();
@@ -669,32 +759,45 @@
   }
 
   function renderShape() {
-    const ptsStr = edit.pts.map(p => p.join(',')).join(' ');
-    outlineEl.setAttribute('points', ptsStr);
-    hitpathEl.setAttribute('points', ptsStr);
+    let rows = '';
+    edit.objs.forEach((obj, o) => {
+      const ptsStr = obj.pts.map(p => p.join(',')).join(' ');
+      const els = edit.shapeEls[o];
+      els.outline.setAttribute('points', ptsStr);
+      els.hitpath.setAttribute('points', ptsStr);
 
-    const rect = minAreaRect(edit.pts);
-    oboxEl.setAttribute('points', rect.corners.map(p => p.join(',')).join(' '));
+      const rect = minAreaRect(obj.pts);
+      els.obox.setAttribute('points', rect.corners.map(p => p.join(',')).join(' '));
 
-    const lenMm = Math.max(rect.w, rect.h) / PX_PER_MM;
-    const widMm = Math.min(rect.w, rect.h) / PX_PER_MM;
-    tbBody.innerHTML =
-      row('Length', lenMm.toFixed(2), 'mm', 'dim') +
-      row('Width', widMm.toFixed(2), 'mm', 'dim') +
-      row('Perimeter', (perimeterPx(edit.pts) / PX_PER_MM).toFixed(2), 'mm') +
-      row('Area', (areaPx(edit.pts) / (PX_PER_MM * PX_PER_MM)).toFixed(1), 'mm&sup2;');
+      const lenMm = Math.max(rect.w, rect.h) / PX_PER_MM;
+      const widMm = Math.min(rect.w, rect.h) / PX_PER_MM;
+      if (edit.objs.length === 1) {
+        rows =
+          row('Length', lenMm.toFixed(2), 'mm', 'dim') +
+          row('Width', widMm.toFixed(2), 'mm', 'dim') +
+          row('Perimeter', (perimeterPx(obj.pts) / PX_PER_MM).toFixed(2), 'mm') +
+          row('Area', (areaPx(obj.pts) / (PX_PER_MM * PX_PER_MM)).toFixed(1), 'mm&sup2;');
+      } else {
+        rows += row(`Object ${o + 1}`,
+          `${lenMm.toFixed(1)} &times; ${widMm.toFixed(1)}`, 'mm', 'dim');
+      }
+    });
+    tbBody.innerHTML = rows;
   }
 
   function renderNodes() {
     nodesEl.textContent = '';
-    edit.pts.forEach((p, i) => {
-      const c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-      c.setAttribute('class', 'node');
-      c.setAttribute('cx', p[0]);
-      c.setAttribute('cy', p[1]);
-      c.setAttribute('r', 8 / viewScale());
-      c.dataset.i = i;
-      nodesEl.appendChild(c);
+    edit.objs.forEach((obj, o) => {
+      obj.pts.forEach((p, i) => {
+        const c = document.createElementNS(SVG_NS, 'circle');
+        c.setAttribute('class', 'node');
+        c.setAttribute('cx', p[0]);
+        c.setAttribute('cy', p[1]);
+        c.setAttribute('r', 8 / viewScale());
+        c.dataset.o = o;
+        c.dataset.i = i;
+        nodesEl.appendChild(c);
+      });
     });
   }
 
@@ -703,13 +806,13 @@
   // ---- node dragging ----
   // The pointer is captured on the SVG (which persists) rather than the
   // node circle, so fast movements and re-renders can't drop the drag.
-  let dragIdx = -1;
+  let drag = null;  // { o, i, circle }
 
-  function startNodeDrag(i, e) {
-    dragIdx = i;
-    const c = nodesEl.children[i];
-    if (c) c.classList.add('dragging');
-    editorSvg.setPointerCapture(e.pointerId);
+  function startNodeDrag(o, i, circle, e) {
+    drag = { o, i, circle };
+    if (circle) circle.classList.add('dragging');
+    // synthetic events (tests, automation) have no active pointer
+    try { editorSvg.setPointerCapture(e.pointerId); } catch (_) {}
   }
 
   nodesEl.addEventListener('pointerdown', e => {
@@ -718,26 +821,31 @@
     if (!t) return;
     e.preventDefault();
     e.stopPropagation();
+    const o = +t.dataset.o, i = +t.dataset.i;
     // shift-click deletes a node
     if (e.shiftKey) {
-      if (edit.pts.length > 3) {
-        edit.pts.splice(+t.dataset.i, 1);
+      if (edit.objs[o].pts.length > 3) {
+        edit.objs[o].pts.splice(i, 1);
         render();
       }
       return;
     }
-    startNodeDrag(+t.dataset.i, e);
+    startNodeDrag(o, i, t, e);
   });
 
   // press on an edge: insert a node there and drag it in the same gesture
-  hitpathEl.addEventListener('pointerdown', e => {
+  shapesEl.addEventListener('pointerdown', e => {
     if (e.button !== 0) return;
+    const hp = e.target.closest('.hitpath');
+    if (!hp) return;
     e.preventDefault();
     e.stopPropagation();
+    const o = +hp.dataset.o;
+    const pts = edit.objs[o].pts;
     const p = worldPoint(e);
     let bestI = 0, bestD = 1/0, bestPt = null;
-    for (let i = 0; i < edit.pts.length; i++) {
-      const a = edit.pts[i], b = edit.pts[(i + 1) % edit.pts.length];
+    for (let i = 0; i < pts.length; i++) {
+      const a = pts[i], b = pts[(i + 1) % pts.length];
       const abx = b[0]-a[0], aby = b[1]-a[1];
       const t = Math.max(0, Math.min(1,
         ((p.x-a[0])*abx + (p.y-a[1])*aby) / (abx*abx + aby*aby || 1)));
@@ -745,36 +853,36 @@
       const d = Math.hypot(p.x-qx, p.y-qy);
       if (d < bestD) { bestD = d; bestI = i; bestPt = [qx, qy]; }
     }
-    edit.pts.splice(bestI + 1, 0, bestPt);
+    pts.splice(bestI + 1, 0, bestPt);
     render();
-    startNodeDrag(bestI + 1, e);
+    const circle = nodesEl.querySelector(`.node[data-o="${o}"][data-i="${bestI + 1}"]`);
+    startNodeDrag(o, bestI + 1, circle, e);
   });
 
   editorSvg.addEventListener('pointermove', e => {
-    if (dragIdx < 0) return;
+    if (!drag) return;
     const p = worldPoint(e);
-    edit.pts[dragIdx] = [
+    const pt = [
       Math.max(0, Math.min(edit.w, p.x)),
       Math.max(0, Math.min(edit.h, p.y)),
     ];
-    const c = nodesEl.children[dragIdx];
-    if (c) {
-      c.setAttribute('cx', edit.pts[dragIdx][0]);
-      c.setAttribute('cy', edit.pts[dragIdx][1]);
+    edit.objs[drag.o].pts[drag.i] = pt;
+    if (drag.circle) {
+      drag.circle.setAttribute('cx', pt[0]);
+      drag.circle.setAttribute('cy', pt[1]);
     }
     renderShape();
   });
   ['pointerup', 'pointercancel'].forEach(ev => editorSvg.addEventListener(ev, () => {
-    if (dragIdx >= 0) {
-      const c = nodesEl.children[dragIdx];
-      if (c) c.classList.remove('dragging');
-      dragIdx = -1;
+    if (drag) {
+      if (drag.circle) drag.circle.classList.remove('dragging');
+      drag = null;
     }
   }));
 
 
   $('btn-reset').addEventListener('click', () => {
-    edit.pts = edit.orig.map(p => [p[0], p[1]]);
+    edit.objs.forEach(obj => { obj.pts = obj.orig.map(p => [p[0], p[1]]); });
     render();
   });
   $('btn-new').addEventListener('click', () => fileInput.click());
@@ -790,29 +898,82 @@
   }
   $('dl-dxf').addEventListener('click', () => {
     if (!edit) return;
-    const lines = ['0','SECTION','2','ENTITIES','0','POLYLINE','8','0','66','1','70','1'];
-    for (const [x, y] of edit.pts) {
-      lines.push('0','VERTEX','8','0',
-        '10', (x / PX_PER_MM).toFixed(3),
-        '20', ((edit.h - y) / PX_PER_MM).toFixed(3));   // DXF is Y-up
+    const lines = ['0','SECTION','2','ENTITIES'];
+    for (const obj of edit.objs) {
+      lines.push('0','POLYLINE','8','0','66','1','70','1');
+      for (const [x, y] of obj.pts) {
+        lines.push('0','VERTEX','8','0',
+          '10', (x / PX_PER_MM).toFixed(3),
+          '20', ((edit.h - y) / PX_PER_MM).toFixed(3));   // DXF is Y-up
+      }
+      lines.push('0','SEQEND');
     }
-    lines.push('0','SEQEND','0','ENDSEC','0','EOF');
+    lines.push('0','ENDSEC','0','EOF');
     downloadBlob(lines.join('\n') + '\n', edit.name + '_outline.dxf', 'application/dxf');
   });
   $('dl-svg').addEventListener('click', () => {
     if (!edit) return;
-    const xs = edit.pts.map(p => p[0] / PX_PER_MM);
-    const ys = edit.pts.map(p => p[1] / PX_PER_MM);
-    const x0 = Math.min(...xs), y0 = Math.min(...ys);
-    const w = Math.max(...xs) - x0, h = Math.max(...ys) - y0;
-    const d = 'M ' + xs.map((x, i) =>
-      `${(x - x0).toFixed(3)},${(ys[i] - y0).toFixed(3)}`).join(' L ') + ' Z';
+    const allX = edit.objs.flatMap(o => o.pts.map(p => p[0] / PX_PER_MM));
+    const allY = edit.objs.flatMap(o => o.pts.map(p => p[1] / PX_PER_MM));
+    const x0 = Math.min(...allX), y0 = Math.min(...allY);
+    const w = Math.max(...allX) - x0, h = Math.max(...allY) - y0;
+    const paths = edit.objs.map(obj => {
+      const d = 'M ' + obj.pts.map(p =>
+        `${(p[0] / PX_PER_MM - x0).toFixed(3)},${(p[1] / PX_PER_MM - y0).toFixed(3)}`
+      ).join(' L ') + ' Z';
+      return `  <path d="${d}" fill="none" stroke="black" stroke-width="0.2"/>`;
+    }).join('\n');
     downloadBlob(
       `<svg xmlns="http://www.w3.org/2000/svg" width="${w.toFixed(2)}mm" `
       + `height="${h.toFixed(2)}mm" viewBox="0 0 ${w.toFixed(3)} ${h.toFixed(3)}">\n`
-      + `  <path d="${d}" fill="none" stroke="black" stroke-width="0.2"/>\n</svg>\n`,
+      + paths + `\n</svg>\n`,
       edit.name + '_outline.svg', 'image/svg+xml');
   });
+
+  // ---------- case / insert generation (server-side booleans) ----------
+  const caseNote = $('case-note');
+  async function generateCase(mode) {
+    if (!edit) return;
+    const btns = [$('btn-stl'), $('btn-offsetdxf')];
+    btns.forEach(b => b.disabled = true);
+    caseNote.textContent = 'generating…';
+    try {
+      const resp = await fetch('/api/case', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: edit.name,
+          mode,
+          px_per_mm: PX_PER_MM,
+          objects: edit.objs.map(o => o.pts),
+          clearance_mm: parseFloat($('case-clearance').value) || 0,
+          depth_mm: parseFloat($('case-depth').value) || 15,
+          floor_mm: parseFloat($('case-floor').value) || 2,
+          margin_mm: parseFloat($('case-margin').value) || 0,
+          wall_mm: parseFloat($('case-wall').value) || 1.6,
+        }),
+      });
+      const data = await resp.json();
+      if (!data.ok) {
+        caseNote.textContent = data.error;
+        return;
+      }
+      caseNote.textContent = data.size_mm
+        ? data.size_mm.join(' × ') + ' mm'
+          + (data.grid ? ` · ${data.grid[0]}×${data.grid[1]} gridfinity` : '')
+        : 'done';
+      const a = document.createElement('a');
+      a.href = data.file_url;
+      a.download = '';
+      a.click();
+    } catch (err) {
+      caseNote.textContent = 'Could not reach the measurement server.';
+    } finally {
+      btns.forEach(b => b.disabled = false);
+    }
+  }
+  $('btn-stl').addEventListener('click', () => generateCase($('case-mode').value));
+  $('btn-offsetdxf').addEventListener('click', () => generateCase('offset-dxf'));
 
   // ---------- measurement request ----------
   function row(label, value, unit, cls = '') {
@@ -833,6 +994,7 @@
     form.append('width', $('opt-width').value);
     form.append('height', $('opt-height').value);
     form.append('convexHull', $('opt-hull').checked);
+    form.append('multi', $('opt-multi').checked);
     form.append('smooth', smoothStrength(parseInt(smoothSlider.value)).toFixed(2));
     form.append('minContrast', String(shadowFloor(parseInt(shadowSlider.value))));
 

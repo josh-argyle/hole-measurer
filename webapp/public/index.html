@@ -171,6 +171,15 @@
     stroke: var(--blue); stroke-width: 1.5; stroke-dasharray: 4 4;
     vector-effect: non-scaling-stroke;
   }
+  .editor .dim-label {
+    font-family: 'IBM Plex Mono', monospace;
+    font-weight: 600;
+    fill: var(--blue);
+    stroke: #fff; stroke-width: 0.25em; paint-order: stroke;
+    text-anchor: middle;
+    dominant-baseline: middle;
+    pointer-events: none;
+  }
 
   /* 3D preview of the generated case */
   .preview { position: absolute; inset: 0; background: #fff; border-radius: 3px; }
@@ -370,6 +379,7 @@
           <g id="world">
             <image id="warped-image" x="0" y="0"></image>
             <g id="shapes"></g>
+            <g id="labels"></g>
             <g id="nodes"></g>
             <g id="alignlayer"></g>
           </g>
@@ -417,7 +427,7 @@
       <div class="tb-error" id="tb-error" hidden></div>
     </div>
 
-    <details class="options">
+    <details class="options" open>
       <summary>Frame settings</summary>
       <div class="opt-grid">
         <div class="opt">
@@ -453,7 +463,7 @@
       </div>
     </details>
 
-    <details class="options" id="case-panel" hidden>
+    <details class="options" id="case-panel" open hidden>
       <summary>Case / insert</summary>
       <div class="opt-grid">
         <div class="opt opt-full">
@@ -526,7 +536,7 @@
   const dropframe = $('dropframe'), pick = $('pick'), fileInput = $('file-input');
   const windowEl = $('window'), warpedImage = $('warped-image'), busy = $('busy');
   const editorSvg = $('editor'), shapesEl = $('shapes');
-  const nodesEl = $('nodes'), worldEl = $('world');
+  const nodesEl = $('nodes'), worldEl = $('world'), labelsEl = $('labels');
   const SVG_NS = 'http://www.w3.org/2000/svg';
   const tbBody = $('tb-body'), tbError = $('tb-error'), tbFile = $('tb-file');
   const tbEdit = $('tb-edit'), tbDownloads = $('tb-downloads'), scaleNote = $('scale-note');
@@ -694,6 +704,10 @@
     worldEl.setAttribute('transform',
       `matrix(${viewM.a} ${viewM.b} ${viewM.c} ${viewM.d} ${viewM.e} ${viewM.f})`);
     updateNodeSize();
+    // labels keep constant on-screen size and orientation flip
+    if (edit && edit.shapeEls && edit.shapeEls.length === edit.objs.length) {
+      renderShape();
+    }
   }
   function resetView() { viewM = new DOMMatrix(); applyView(); }
   function worldPoint(evt) {
@@ -813,8 +827,31 @@
     applyView();
   }
 
+  // Dimension label just outside an oriented-box edge, rotated along it
+  function dimLabel(p1, p2, center, mm) {
+    const k = viewScale();
+    const mx = (p1[0] + p2[0]) / 2, my = (p1[1] + p2[1]) / 2;
+    let tx = p2[0] - p1[0], ty = p2[1] - p1[1];
+    const len = Math.hypot(tx, ty) || 1;
+    tx /= len; ty /= len;
+    let nx = -ty, ny = tx;
+    if ((mx - center[0]) * nx + (my - center[1]) * ny < 0) { nx = -nx; ny = -ny; }
+    const off = 16 / k;
+    let deg = Math.atan2(ty, tx) * 180 / Math.PI;
+    // flip when the text would read upside-down on screen
+    if (viewM.a * tx + viewM.c * ty < 0) deg += 180;
+    const t = document.createElementNS(SVG_NS, 'text');
+    t.setAttribute('class', 'dim-label');
+    t.setAttribute('transform',
+      `translate(${mx + nx * off} ${my + ny * off}) rotate(${deg.toFixed(2)})`);
+    t.setAttribute('font-size', 14 / k);
+    t.textContent = mm.toFixed(1) + ' mm';
+    labelsEl.appendChild(t);
+  }
+
   function renderShape() {
     let rows = '';
+    labelsEl.textContent = '';
     edit.objs.forEach((obj, o) => {
       const ptsStr = obj.pts.map(p => p.join(',')).join(' ');
       const els = edit.shapeEls[o];
@@ -826,15 +863,27 @@
 
       const lenMm = Math.max(rect.w, rect.h) / PX_PER_MM;
       const widMm = Math.min(rect.w, rect.h) / PX_PER_MM;
+
+      // Length on a long edge, width on an adjacent short edge
+      const c = rect.corners;
+      if (c.length === 4) {
+        const center = [(c[0][0] + c[2][0]) / 2, (c[0][1] + c[2][1]) / 2];
+        const e0 = Math.hypot(c[1][0] - c[0][0], c[1][1] - c[0][1]);
+        const e1 = Math.hypot(c[2][0] - c[1][0], c[2][1] - c[1][1]);
+        dimLabel(c[0], c[1], center, e0 >= e1 ? lenMm : widMm);
+        dimLabel(c[1], c[2], center, e0 >= e1 ? widMm : lenMm);
+      }
+
+      const peri = (perimeterPx(obj.pts) / PX_PER_MM);
+      const area = (areaPx(obj.pts) / (PX_PER_MM * PX_PER_MM));
       if (edit.objs.length === 1) {
         rows =
-          row('Length', lenMm.toFixed(2), 'mm', 'dim') +
-          row('Width', widMm.toFixed(2), 'mm', 'dim') +
-          row('Perimeter', (perimeterPx(obj.pts) / PX_PER_MM).toFixed(2), 'mm') +
-          row('Area', (areaPx(obj.pts) / (PX_PER_MM * PX_PER_MM)).toFixed(1), 'mm&sup2;');
+          row('Perimeter', peri.toFixed(2), 'mm') +
+          row('Area', area.toFixed(1), 'mm&sup2;');
       } else {
         rows += row(`Object ${o + 1}`,
-          `${lenMm.toFixed(1)} &times; ${widMm.toFixed(1)}`, 'mm', 'dim');
+          `${peri.toFixed(0)} <small>mm</small> &middot; ${area.toFixed(0)}`,
+          'mm&sup2;');
       }
     });
     tbBody.innerHTML = rows;
@@ -1394,6 +1443,35 @@
       tbError.hidden = false;
     }
   }
+
+  // ---------- persist frame + case options across page loads ----------
+  const PERSIST_IDS = [
+    'opt-width', 'opt-height', 'opt-smooth', 'opt-shadow', 'opt-hull', 'opt-multi',
+    'case-mode', 'case-clearance', 'case-depth', 'case-floor', 'case-margin',
+    'case-wall', 'case-lip', 'case-fillet', 'case-edge', 'case-corner', 'case-hollow',
+  ];
+  function saveOptions() {
+    const o = {};
+    for (const id of PERSIST_IDS) {
+      const el = $(id);
+      o[id] = el.type === 'checkbox' ? el.checked : el.value;
+    }
+    try { localStorage.setItem('measur-options', JSON.stringify(o)); } catch (_) {}
+  }
+  (function restoreOptions() {
+    let o;
+    try { o = JSON.parse(localStorage.getItem('measur-options') || '{}'); }
+    catch (_) { return; }
+    for (const id of PERSIST_IDS) {
+      if (!(id in o)) continue;
+      const el = $(id);
+      if (el.type === 'checkbox') el.checked = !!o[id];
+      else el.value = o[id];
+    }
+    smoothVal.textContent = smoothSlider.value === '0' ? 'off' : smoothSlider.value;
+    shadowVal.textContent = shadowSlider.value === '0' ? 'auto' : shadowSlider.value;
+  })();
+  PERSIST_IDS.forEach(id => $(id).addEventListener('change', saveOptions));
 </script>
 </body>
 </html>

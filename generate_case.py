@@ -119,9 +119,10 @@ def hex_lattice(w, h, pitch=12.0, rib=1.0):
 def lip_cutter(cs, z_top, r):
     """
     Roundover cutter for a pocket opening: stacked, shrinking offsets
-    approximating a quarter-round lead-in (steps ~one print layer).
+    approximating a quarter-round lead-in. 0.1mm steps - finer than a
+    print layer, so it slices identically to a true round surface.
     """
-    n = max(3, int(np.ceil(r / 0.25)))
+    n = min(30, max(6, int(np.ceil(r / 0.1))))
     parts = []
     for k in range(1, n + 1):
         d_lo = r * (k - 1) / n
@@ -135,9 +136,10 @@ def lip_cutter(cs, z_top, r):
 def floor_fillet(cs, z_floor, r):
     """
     Concave fillet where the pocket wall meets the pocket floor: stacked
-    rings inscribing a quarter-round. Returns a Manifold or None.
+    rings inscribing a quarter-round, 0.1mm steps (finer than a print
+    layer). Returns a Manifold or None.
     """
-    n = max(3, int(np.ceil(r / 0.25)))
+    n = min(30, max(6, int(np.ceil(r / 0.1))))
     parts = []
     for k in range(1, n + 1):
         h_lo = r * (k - 1) / n

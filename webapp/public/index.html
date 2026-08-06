@@ -135,21 +135,22 @@
     position: relative;
     overflow: hidden;
   }
-  .window img, .window svg.editor {
+  .window svg.editor {
     position: absolute;
     inset: 0;
     width: 100%;
     height: 100%;
   }
-  .window img { object-fit: contain; }
 
   /* editor overlay */
   .editor { cursor: crosshair; }
+  .editor.panning { cursor: grabbing; }
   .editor .outline {
     fill: none; stroke: var(--green); stroke-width: 3; vector-effect: non-scaling-stroke;
   }
   .editor .hitpath {
     fill: none; stroke: transparent; stroke-width: 14; cursor: copy;
+    vector-effect: non-scaling-stroke;
   }
   .editor .obox {
     fill: none; stroke: var(--blue); stroke-width: 1.5;
@@ -312,12 +313,15 @@
         </span>
       </button>
       <span class="window" id="window" hidden>
-        <img id="warped-img" alt="Calibrated top-down view of the frame">
-        <svg class="editor" id="editor" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
-          <polygon class="obox" id="obox"></polygon>
-          <polygon class="hitpath" id="hitpath"></polygon>
-          <polygon class="outline" id="outline"></polygon>
-          <g id="nodes"></g>
+        <svg class="editor" id="editor" preserveAspectRatio="xMidYMid meet"
+             role="img" aria-label="Calibrated top-down view with editable outline">
+          <g id="world">
+            <image id="warped-image" x="0" y="0"></image>
+            <polygon class="obox" id="obox"></polygon>
+            <polygon class="hitpath" id="hitpath"></polygon>
+            <polygon class="outline" id="outline"></polygon>
+            <g id="nodes"></g>
+          </g>
         </svg>
       </span>
       <span class="busy" id="busy" hidden>
@@ -394,9 +398,9 @@
 <script>
   const $ = id => document.getElementById(id);
   const dropframe = $('dropframe'), pick = $('pick'), fileInput = $('file-input');
-  const windowEl = $('window'), warpedImg = $('warped-img'), busy = $('busy');
+  const windowEl = $('window'), warpedImage = $('warped-image'), busy = $('busy');
   const editorSvg = $('editor'), outlineEl = $('outline'), hitpathEl = $('hitpath');
-  const oboxEl = $('obox'), nodesEl = $('nodes');
+  const oboxEl = $('obox'), nodesEl = $('nodes'), worldEl = $('world');
   const tbBody = $('tb-body'), tbError = $('tb-error'), tbFile = $('tb-file');
   const tbEdit = $('tb-edit'), tbDownloads = $('tb-downloads'), scaleNote = $('scale-note');
 
@@ -508,8 +512,12 @@
       h: data.warped_h,
       name: fileName.replace(/\.[^.]+$/, ''),
     };
-    warpedImg.src = data.warped_url + '?t=' + Date.now();
+    warpedImage.setAttribute('href', data.warped_url + '?t=' + Date.now());
+    warpedImage.setAttribute('width', edit.w);
+    warpedImage.setAttribute('height', edit.h);
     editorSvg.setAttribute('viewBox', `0 0 ${edit.w} ${edit.h}`);
+    view = { k: 1, tx: 0, ty: 0 };
+    applyView();
     pick.hidden = true;
     windowEl.hidden = false;
     tbEdit.hidden = false;
@@ -520,6 +528,60 @@
   function svgPoint(evt) {
     const pt = new DOMPoint(evt.clientX, evt.clientY);
     return pt.matrixTransform(editorSvg.getScreenCTM().inverse());
+  }
+
+  // ---------- pan & zoom ----------
+  let view = { k: 1, tx: 0, ty: 0 };
+
+  function applyView() {
+    worldEl.setAttribute('transform',
+      `translate(${view.tx} ${view.ty}) scale(${view.k})`);
+  }
+  function worldPoint(evt) {
+    const p = svgPoint(evt);
+    return { x: (p.x - view.tx) / view.k, y: (p.y - view.ty) / view.k };
+  }
+
+  editorSvg.addEventListener('wheel', e => {
+    if (!edit) return;
+    e.preventDefault();
+    const factor = e.deltaY < 0 ? 1.2 : 1 / 1.2;
+    const k = Math.min(20, Math.max(1, view.k * factor));
+    if (k === view.k) return;
+    const p = svgPoint(e);
+    view.tx = p.x - (p.x - view.tx) * (k / view.k);
+    view.ty = p.y - (p.y - view.ty) * (k / view.k);
+    view.k = k;
+    if (k === 1) { view.tx = 0; view.ty = 0; }
+    applyView();
+    updateNodeSize();
+  }, { passive: false });
+
+  let panning = null;
+  editorSvg.addEventListener('pointerdown', e => {
+    if (e.button !== 1 || !edit) return;   // middle button pans
+    e.preventDefault();
+    panning = { x: e.clientX, y: e.clientY, tx: view.tx, ty: view.ty,
+                scale: editorSvg.getScreenCTM().a };
+    editorSvg.classList.add('panning');
+    editorSvg.setPointerCapture(e.pointerId);
+  });
+  editorSvg.addEventListener('pointermove', e => {
+    if (!panning) return;
+    view.tx = panning.tx + (e.clientX - panning.x) / panning.scale;
+    view.ty = panning.ty + (e.clientY - panning.y) / panning.scale;
+    applyView();
+  });
+  ['pointerup', 'pointercancel'].forEach(ev => editorSvg.addEventListener(ev, () => {
+    panning = null;
+    editorSvg.classList.remove('panning');
+  }));
+  // stop middle-click autoscroll
+  editorSvg.addEventListener('auxclick', e => { if (e.button === 1) e.preventDefault(); });
+
+  function updateNodeSize() {
+    const r = 8 / view.k;
+    nodesEl.querySelectorAll('.node').forEach(c => c.setAttribute('r', r));
   }
 
   function render() {
@@ -537,7 +599,7 @@
       c.setAttribute('class', 'node');
       c.setAttribute('cx', p[0]);
       c.setAttribute('cy', p[1]);
-      c.setAttribute('r', 8);
+      c.setAttribute('r', 8 / view.k);
       c.dataset.i = i;
       nodesEl.appendChild(c);
     });
@@ -555,6 +617,7 @@
   // drag to move
   let dragging = null;
   nodesEl.addEventListener('pointerdown', e => {
+    if (e.button !== 0) return;
     const t = e.target.closest('.node');
     if (!t) return;
     e.preventDefault();
@@ -565,7 +628,7 @@
   });
   nodesEl.addEventListener('pointermove', e => {
     if (!dragging) return;
-    const p = svgPoint(e);
+    const p = worldPoint(e);
     const i = +dragging.dataset.i;
     edit.pts[i] = [
       Math.max(0, Math.min(edit.w, p.x)),
@@ -592,7 +655,7 @@
 
   // click an edge to insert a node at that spot
   hitpathEl.addEventListener('click', e => {
-    const p = svgPoint(e);
+    const p = worldPoint(e);
     let bestI = 0, bestD = 1/0, bestPt = null;
     for (let i = 0; i < edit.pts.length; i++) {
       const a = edit.pts[i], b = edit.pts[(i + 1) % edit.pts.length];

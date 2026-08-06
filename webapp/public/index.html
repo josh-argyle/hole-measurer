@@ -481,8 +481,12 @@
           <input type="number" id="case-margin" value="5" step="0.5" min="0">
         </div>
         <div class="opt">
-          <label for="case-wall">Shell wall (mm)</label>
+          <label for="case-wall">Wall (mm)</label>
           <input type="number" id="case-wall" value="1.6" step="0.1" min="0.4">
+        </div>
+        <div class="opt-check">
+          <input type="checkbox" id="case-hollow" checked>
+          <label for="case-hollow">Hollow underside (lighter print)</label>
         </div>
         <div class="case-actions">
           <button type="button" id="btn-stl">Generate STL</button>
@@ -922,6 +926,25 @@
   $('btn-new').addEventListener('click', () => fileInput.click());
 
   // ---------- downloads generated from the edited path ----------
+  // Exports follow the on-screen orientation: the view rotation (from
+  // Align view) is applied, zoom and pan are stripped, and coordinates
+  // are normalised so the part starts at the origin.
+  function exportOutlines() {
+    const k = viewScale();
+    const outlines = edit.objs.map(obj => obj.pts.map(([x, y]) => {
+      const q = new DOMPoint(x, y).matrixTransform(viewM);
+      return [q.x / k, q.y / k];
+    }));
+    let mnx = 1/0, mny = 1/0;
+    for (const pts of outlines) {
+      for (const [x, y] of pts) {
+        if (x < mnx) mnx = x;
+        if (y < mny) mny = y;
+      }
+    }
+    return outlines.map(pts => pts.map(([x, y]) => [x - mnx, y - mny]));
+  }
+
   function downloadBlob(text, name, type) {
     const url = URL.createObjectURL(new Blob([text], { type }));
     const a = document.createElement('a');
@@ -932,13 +955,15 @@
   }
   $('dl-dxf').addEventListener('click', () => {
     if (!edit) return;
+    const outlines = exportOutlines();
+    const H = Math.max(...outlines.flatMap(pts => pts.map(p => p[1])));
     const lines = ['0','SECTION','2','ENTITIES'];
-    for (const obj of edit.objs) {
+    for (const pts of outlines) {
       lines.push('0','POLYLINE','8','0','66','1','70','1');
-      for (const [x, y] of obj.pts) {
+      for (const [x, y] of pts) {
         lines.push('0','VERTEX','8','0',
           '10', (x / PX_PER_MM).toFixed(3),
-          '20', ((edit.h - y) / PX_PER_MM).toFixed(3));   // DXF is Y-up
+          '20', ((H - y) / PX_PER_MM).toFixed(3));   // DXF is Y-up
       }
       lines.push('0','SEQEND');
     }
@@ -947,13 +972,12 @@
   });
   $('dl-svg').addEventListener('click', () => {
     if (!edit) return;
-    const allX = edit.objs.flatMap(o => o.pts.map(p => p[0] / PX_PER_MM));
-    const allY = edit.objs.flatMap(o => o.pts.map(p => p[1] / PX_PER_MM));
-    const x0 = Math.min(...allX), y0 = Math.min(...allY);
-    const w = Math.max(...allX) - x0, h = Math.max(...allY) - y0;
-    const paths = edit.objs.map(obj => {
-      const d = 'M ' + obj.pts.map(p =>
-        `${(p[0] / PX_PER_MM - x0).toFixed(3)},${(p[1] / PX_PER_MM - y0).toFixed(3)}`
+    const outlines = exportOutlines();
+    const w = Math.max(...outlines.flatMap(pts => pts.map(p => p[0]))) / PX_PER_MM;
+    const h = Math.max(...outlines.flatMap(pts => pts.map(p => p[1]))) / PX_PER_MM;
+    const paths = outlines.map(pts => {
+      const d = 'M ' + pts.map(p =>
+        `${(p[0] / PX_PER_MM).toFixed(3)},${(p[1] / PX_PER_MM).toFixed(3)}`
       ).join(' L ') + ' Z';
       return `  <path d="${d}" fill="none" stroke="black" stroke-width="0.2"/>`;
     }).join('\n');
@@ -1270,12 +1294,13 @@
           name: edit.name,
           mode,
           px_per_mm: PX_PER_MM,
-          objects: edit.objs.map(o => o.pts),
+          objects: exportOutlines(),
           clearance_mm: parseFloat($('case-clearance').value) || 0,
           depth_mm: parseFloat($('case-depth').value) || 15,
           floor_mm: parseFloat($('case-floor').value) || 2,
           margin_mm: parseFloat($('case-margin').value) || 0,
           wall_mm: parseFloat($('case-wall').value) || 1.6,
+          hollow: $('case-hollow').checked,
         }),
       });
       const data = await resp.json();
@@ -1286,6 +1311,7 @@
       caseNote.textContent = data.size_mm
         ? data.size_mm.join(' × ') + ' mm'
           + (data.grid ? ` · ${data.grid[0]}×${data.grid[1]} gridfinity` : '')
+          + (data.grams_pla ? ` · ≈${data.grams_pla} g PLA` : '')
         : 'done';
       const a = document.createElement('a');
       a.href = data.file_url;

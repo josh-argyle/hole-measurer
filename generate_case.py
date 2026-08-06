@@ -89,6 +89,30 @@ def gridfinity_base(nx, ny):
     return sum(pads[1:], pads[0])
 
 
+def hex_lattice(w, h, pitch=12.0, rib=1.0):
+    """
+    Honeycomb rib pattern covering a centered w x h area. Hollowed cavities
+    keep these ribs so the deck above prints as short bridges instead of
+    one long unsupported span (each bridge <= pitch).
+    """
+    R = pitch / np.sqrt(3)  # circumradius: across-flats equals pitch
+    ang = np.arange(6) * np.pi / 3 + np.pi / 6  # pointy-top
+
+    def hexagon(r):
+        return CrossSection([[(r * np.cos(a), r * np.sin(a)) for a in ang]])
+
+    ring = hexagon(R + rib / 2) - hexagon(R - rib / 2)
+    dy = 1.5 * R
+    nx = int(np.ceil(w / pitch / 2)) + 1
+    ny = int(np.ceil(h / dy / 2)) + 1
+    cells = []
+    for j in range(-ny, ny + 1):
+        xoff = pitch / 2 if j % 2 else 0
+        for i in range(-nx, nx + 1):
+            cells.append(ring.translate((i * pitch + xoff, j * dy)))
+    return sum(cells[1:], cells[0])
+
+
 def outlines_to_cross_section(objects, px_per_mm, clearance):
     """Convert px outlines to a single mm CrossSection, offset by the
     clearance. Y is flipped so the pocket matches the photo seen from
@@ -152,6 +176,7 @@ def main():
     floor = float(spec.get('floor_mm', 2))
     margin = float(spec.get('margin_mm', 5))
     wall = float(spec.get('wall_mm', 1.6))
+    hollow = bool(spec.get('hollow', False))
 
     pockets = outlines_to_cross_section(spec['objects'], px_per_mm, clearance)
     x0, y0, x1, y1 = pockets.bounds()
@@ -186,11 +211,37 @@ def main():
             print(json.dumps({'ok': False,
                               'error': 'Objects larger than the gridfinity block'}))
             return
-        body = slab(rounded_rect(body_w, body_h, CORNER_R), BASE_H, total_h)
+        footprint = rounded_rect(body_w, body_h, CORNER_R)
+        body = slab(footprint, BASE_H, total_h)
         solid = gridfinity_base(nx, ny) + body
         # Pocket cut straight down from the top face
         cut = slab(pockets, total_h - depth, total_h + 1)
         solid = solid - cut
+        if hollow:
+            guard = pockets.offset(wall, JoinType.Round, circular_segments=32)
+            lattice = hex_lattice(body_w, body_h)
+            # Around the pockets: hollow up to a deck under the top face
+            body_inner = footprint.offset(-wall, JoinType.Round) - guard - lattice
+            if body_inner.area() > 0 and total_h - floor > BASE_H:
+                solid = solid - slab(body_inner, BASE_H, total_h - floor)
+            # Under the pockets: keep a floor-thick deck as the pocket floor
+            under = pockets.offset(-wall, JoinType.Round) - lattice
+            if under.area() > 0 and total_h - depth - floor > BASE_H + 0.4:
+                solid = solid - slab(under, BASE_H, total_h - depth - floor)
+            # Base pads: hollow their interiors, keep the engagement walls
+            pad_size = CELL_BOTTOM - 2 * wall
+            if pad_size > 2:
+                pad_inner = rounded_rect(pad_size, pad_size, 0.8)
+                pads = []
+                x0 = -(nx - 1) * GRID / 2
+                y0 = -(ny - 1) * GRID / 2
+                for i in range(nx):
+                    for j in range(ny):
+                        pads.append(pad_inner.translate((x0 + i * GRID,
+                                                         y0 + j * GRID)))
+                pads_cs = sum(pads[1:], pads[0]) - guard - lattice
+                if pads_cs.area() > 0:
+                    solid = solid - slab(pads_cs, -1, BASE_H + 0.01)
         info['grid'] = [nx, ny]
         info['size_mm'] = [round(body_w, 1), round(body_h, 1), round(total_h, 1)]
 
@@ -198,9 +249,20 @@ def main():
         block_w = content_w + 2 * margin
         block_h = content_h + 2 * margin
         total_h = floor + depth
-        block = slab(rounded_rect(block_w, block_h, min(3.0, margin)), 0, total_h)
+        footprint = rounded_rect(block_w, block_h, min(3.0, margin))
+        block = slab(footprint, 0, total_h)
         cut = slab(pockets, floor, total_h + 1)
         solid = block - cut
+        if hollow:
+            guard = pockets.offset(wall, JoinType.Round, circular_segments=32)
+            lattice = hex_lattice(block_w, block_h)
+            # Around the pockets: hollow up to a deck under the top face,
+            # keeping honeycomb ribs so the deck prints as short bridges.
+            # Under the pockets nothing needs removing in block mode: the
+            # pocket already reaches down to a floor-thick deck.
+            cavity = footprint.offset(-wall, JoinType.Round) - guard - lattice
+            if cavity.area() > 0 and total_h - floor > 0.4:
+                solid = solid - slab(cavity, -1, total_h - floor)
         info['size_mm'] = [round(block_w, 1), round(block_h, 1), round(total_h, 1)]
 
     if solid.volume() <= 0:
@@ -210,6 +272,9 @@ def main():
 
     write_stl(solid, out_path)
     info['triangles'] = int(np.asarray(solid.to_mesh().tri_verts).shape[0])
+    # Printed weight at 100% of this geometry (PLA, 1.24 g/cm3); slicer
+    # infill settings only matter for whatever solid volume remains
+    info['grams_pla'] = round(solid.volume() / 1000.0 * 1.24, 1)
     print(json.dumps(info))
 
 

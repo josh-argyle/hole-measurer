@@ -172,6 +172,31 @@
     vector-effect: non-scaling-stroke;
   }
 
+  /* 3D preview of the generated case */
+  .preview { position: absolute; inset: 0; background: #fff; border-radius: 3px; }
+  .preview canvas {
+    position: absolute; inset: 0; width: 100%; height: 100%;
+    cursor: grab; touch-action: none;
+  }
+  .preview canvas.orbiting { cursor: grabbing; }
+  .preview .bar {
+    position: absolute; top: 10px; left: 12px; right: 12px;
+    display: flex; justify-content: space-between; align-items: center; gap: 10px;
+    pointer-events: none;
+  }
+  .preview .bar > * { pointer-events: auto; }
+  .preview .hint {
+    font-family: 'IBM Plex Mono', monospace; font-size: 0.72rem;
+    color: var(--graphite); pointer-events: none;
+  }
+  .preview .bar button {
+    font: inherit; font-size: 0.75rem;
+    border: 1px solid var(--line); background: #fff; color: var(--ink);
+    padding: 5px 10px; border-radius: 3px; cursor: pointer;
+  }
+  .preview .bar button:hover { border-color: var(--ink); }
+  .preview .bar button:focus-visible { outline: 2px solid var(--blue); }
+
   .busy {
     position: absolute; inset: 26px;
     border-radius: 3px;
@@ -349,6 +374,13 @@
             <g id="alignlayer"></g>
           </g>
         </svg>
+        <span class="preview" id="preview" hidden>
+          <canvas id="pv-canvas" aria-label="3D preview of the generated case"></canvas>
+          <span class="bar">
+            <span class="hint" id="pv-hint">drag to orbit &middot; scroll to zoom</span>
+            <button type="button" id="pv-close">Back to editor</button>
+          </span>
+        </span>
       </span>
       <span class="busy" id="busy" hidden>
         <span class="scanline"></span>
@@ -455,6 +487,7 @@
         <div class="case-actions">
           <button type="button" id="btn-stl">Generate STL</button>
           <button type="button" id="btn-offsetdxf">Offset DXF</button>
+          <button type="button" id="btn-preview" hidden>3D view</button>
         </div>
         <span class="case-note" id="case-note"></span>
       </div>
@@ -604,6 +637,7 @@
     tbDownloads.hidden = false;
     $('case-panel').hidden = false;
     $('case-note').textContent = '';
+    $('preview').hidden = true;
     buildShapes();
     render();
   }
@@ -930,6 +964,296 @@
       edit.name + '_outline.svg', 'image/svg+xml');
   });
 
+  // ---------- 3D preview: minimal software STL renderer ----------
+  const previewEl = $('preview'), pvCanvas = $('pv-canvas');
+  const pv = {
+    pos: null, count: 0,           // triangle soup (9 floats per tri)
+    yaw: -0.65, pitch: 0.95, zoom: 1,
+    cx: 0, cy: 0, cz: 0, r: 1,
+    buffer: null,
+  };
+
+  function parseSTL(buf) {
+    const dv = new DataView(buf);
+    if (buf.byteLength < 84) throw new Error('not an STL');
+    const n = dv.getUint32(80, true);
+    if (buf.byteLength < 84 + 50 * n) throw new Error('truncated STL');
+    const pos = new Float32Array(n * 9);
+    let off = 84;
+    for (let i = 0; i < n; i++) {
+      off += 12;  // stored normal - recomputed at render time
+      for (let k = 0; k < 9; k++) { pos[i * 9 + k] = dv.getFloat32(off, true); off += 4; }
+      off += 2;
+    }
+    return pos;
+  }
+
+  // WebGL with a depth buffer: correct occlusion for pockets at any angle
+  let gl = null, glState = null;
+  function initGL() {
+    if (gl) return true;
+    gl = pvCanvas.getContext('webgl', { antialias: true, alpha: true });
+    if (!gl) return false;
+    const vsSrc = `
+      attribute vec3 aPos;
+      attribute vec3 aNormal;
+      uniform mat3 uRot;
+      uniform vec2 uScale;
+      uniform float uDepth;
+      uniform float uHalfH;
+      varying float vShade;
+      void main() {
+        vec3 v = uRot * aPos;
+        gl_Position = vec4(v.x * uScale.x, v.y * uScale.y, -v.z * uDepth, 1.0);
+        vec3 n = uRot * aNormal;
+        vec3 L = normalize(vec3(-0.35, 0.35, 0.87));
+        // darken below the top surface so pockets read as recessed
+        float depthFade = 0.72 + 0.28 * clamp(aPos.z / uHalfH * 0.5 + 0.5, 0.0, 1.0);
+        vShade = (0.35 + 0.65 * max(0.0, dot(n, L))) * depthFade;
+      }`;
+    const fsSrc = `
+      precision mediump float;
+      varying float vShade;
+      void main() {
+        gl_FragColor = vec4(
+          (96.0 + 120.0 * vShade) / 255.0,
+          (104.0 + 116.0 * vShade) / 255.0,
+          (120.0 + 110.0 * vShade) / 255.0, 1.0);
+      }`;
+    const compile = (type, src) => {
+      const s = gl.createShader(type);
+      gl.shaderSource(s, src);
+      gl.compileShader(s);
+      return s;
+    };
+    const prog = gl.createProgram();
+    gl.attachShader(prog, compile(gl.VERTEX_SHADER, vsSrc));
+    gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, fsSrc));
+    gl.linkProgram(prog);
+    gl.useProgram(prog);
+    glState = {
+      prog,
+      aPos: gl.getAttribLocation(prog, 'aPos'),
+      aNormal: gl.getAttribLocation(prog, 'aNormal'),
+      uRot: gl.getUniformLocation(prog, 'uRot'),
+      uScale: gl.getUniformLocation(prog, 'uScale'),
+      uDepth: gl.getUniformLocation(prog, 'uDepth'),
+      uHalfH: gl.getUniformLocation(prog, 'uHalfH'),
+      posBuf: gl.createBuffer(),
+      normBuf: gl.createBuffer(),
+    };
+    gl.enable(gl.DEPTH_TEST);
+    gl.clearColor(0, 0, 0, 0);
+    return true;
+  }
+
+  function showPreview(buf) {
+    pv.buffer = buf;
+    const raw = parseSTL(buf);
+    pv.count = raw.length / 9;
+
+    let mn = [1/0, 1/0, 1/0], mx = [-1/0, -1/0, -1/0];
+    for (let i = 0; i < raw.length; i += 3) {
+      for (let a = 0; a < 3; a++) {
+        const v = raw[i + a];
+        if (v < mn[a]) mn[a] = v;
+        if (v > mx[a]) mx[a] = v;
+      }
+    }
+    const cx = (mn[0] + mx[0]) / 2, cy = (mn[1] + mx[1]) / 2, cz = (mn[2] + mx[2]) / 2;
+    pv.r = Math.max(1, Math.hypot(mx[0] - mn[0], mx[1] - mn[1], mx[2] - mn[2]) / 2);
+    pv.halfH = Math.max(0.5, (mx[2] - mn[2]) / 2);
+    pv.zoom = 1;
+
+    // Center the model and compute flat per-face normals
+    const pos = new Float32Array(raw.length);
+    const norm = new Float32Array(raw.length);
+    for (let i = 0; i < pv.count; i++) {
+      const o = i * 9;
+      for (let v = 0; v < 3; v++) {
+        pos[o + v * 3] = raw[o + v * 3] - cx;
+        pos[o + v * 3 + 1] = raw[o + v * 3 + 1] - cy;
+        pos[o + v * 3 + 2] = raw[o + v * 3 + 2] - cz;
+      }
+      const ux = pos[o + 3] - pos[o], uy = pos[o + 4] - pos[o + 1], uz = pos[o + 5] - pos[o + 2];
+      const vx = pos[o + 6] - pos[o], vy = pos[o + 7] - pos[o + 1], vz = pos[o + 8] - pos[o + 2];
+      let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+      const len = Math.hypot(nx, ny, nz) || 1;
+      nx /= len; ny /= len; nz /= len;
+      for (let v = 0; v < 3; v++) {
+        norm[o + v * 3] = nx; norm[o + v * 3 + 1] = ny; norm[o + v * 3 + 2] = nz;
+      }
+    }
+
+    if (initGL()) {
+      gl.bindBuffer(gl.ARRAY_BUFFER, glState.posBuf);
+      gl.bufferData(gl.ARRAY_BUFFER, pos, gl.STATIC_DRAW);
+      gl.bindBuffer(gl.ARRAY_BUFFER, glState.normBuf);
+      gl.bufferData(gl.ARRAY_BUFFER, norm, gl.STATIC_DRAW);
+    } else {
+      // Software fallback (no WebGL): painter's algorithm mis-sorts large
+      // faces, so subdivide until every edge is small relative to the model
+      pv.pos = subdivide(pos, pv.r / 6);
+    }
+
+    previewEl.hidden = false;
+    $('btn-preview').hidden = false;
+    pvRender();
+  }
+
+  function subdivide(pos, maxEdge) {
+    const limit2 = maxEdge * maxEdge;
+    let tris = Array.from({ length: pos.length / 9 },
+      (_, i) => pos.slice(i * 9, i * 9 + 9));
+    const out = [];
+    while (tris.length && out.length + tris.length < 120000) {
+      const t = tris.pop();
+      let longest = 0, li = 0;
+      for (let e = 0; e < 3; e++) {
+        const a = e * 3, b = ((e + 1) % 3) * 3;
+        const d2 = (t[a] - t[b]) ** 2 + (t[a+1] - t[b+1]) ** 2 + (t[a+2] - t[b+2]) ** 2;
+        if (d2 > longest) { longest = d2; li = e; }
+      }
+      if (longest <= limit2) { out.push(t); continue; }
+      // split at the midpoint of the longest edge
+      const a = li * 3, b = ((li + 1) % 3) * 3, c = ((li + 2) % 3) * 3;
+      const m = [(t[a] + t[b]) / 2, (t[a+1] + t[b+1]) / 2, (t[a+2] + t[b+2]) / 2];
+      const A = [t[a], t[a+1], t[a+2]], B = [t[b], t[b+1], t[b+2]], C = [t[c], t[c+1], t[c+2]];
+      tris.push(Float32Array.from([...A, ...m, ...C]));
+      tris.push(Float32Array.from([...m, ...B, ...C]));
+    }
+    out.push(...tris);  // anything left if the cap was hit
+    const flat = new Float32Array(out.length * 9);
+    out.forEach((t, i) => flat.set(t, i * 9));
+    return flat;
+  }
+
+  function pvRender() {
+    if (!pv.count) return;
+    const dpr = window.devicePixelRatio || 1;
+    const w = pvCanvas.clientWidth, h = pvCanvas.clientHeight;
+    if (!w || !h) return;
+    if (pvCanvas.width !== Math.round(w * dpr)) {
+      pvCanvas.width = Math.round(w * dpr);
+      pvCanvas.height = Math.round(h * dpr);
+    }
+    if (!gl) { pvRenderSoft(w, h, dpr); return; }
+    gl.viewport(0, 0, pvCanvas.width, pvCanvas.height);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+    const sy = Math.sin(pv.yaw), cy = Math.cos(pv.yaw);
+    const sp = Math.sin(pv.pitch), cp = Math.cos(pv.pitch);
+    // View = pitch about X after yaw about Z (column-major mat3)
+    gl.uniformMatrix3fv(glState.uRot, false, [
+      cy, sy * cp, sy * sp,
+      -sy, cy * cp, cy * sp,
+      0, -sp, cp,
+    ]);
+    const s = pv.zoom * 0.9 * Math.min(w, h) / pv.r;
+    gl.uniform2f(glState.uScale, s / w, s / h);
+    gl.uniform1f(glState.uDepth, 1 / (2 * pv.r));
+    gl.uniform1f(glState.uHalfH, pv.halfH);
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, glState.posBuf);
+    gl.enableVertexAttribArray(glState.aPos);
+    gl.vertexAttribPointer(glState.aPos, 3, gl.FLOAT, false, 0, 0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, glState.normBuf);
+    gl.enableVertexAttribArray(glState.aNormal);
+    gl.vertexAttribPointer(glState.aNormal, 3, gl.FLOAT, false, 0, 0);
+    gl.drawArrays(gl.TRIANGLES, 0, pv.count * 3);
+  }
+
+  function pvRenderSoft(w, h, dpr) {
+    const ctx = pvCanvas.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+
+    const sy = Math.sin(pv.yaw), cy = Math.cos(pv.yaw);
+    const sp = Math.sin(pv.pitch), cp = Math.cos(pv.pitch);
+    const scale = pv.zoom * 0.45 * Math.min(w, h) / pv.r;
+    const pos = pv.pos, n = pos.length / 9;
+
+    // View space: yaw about Z, then pitch about X; positions pre-centered
+    const px = new Float32Array(n * 3), py = new Float32Array(n * 3), pz = new Float32Array(n * 3);
+    for (let i = 0; i < n * 3; i++) {
+      const x = pos[i * 3], y = pos[i * 3 + 1], z = pos[i * 3 + 2];
+      const x1 = x * cy - y * sy, y1 = x * sy + y * cy;
+      px[i] = x1;
+      py[i] = y1 * cp - z * sp;
+      pz[i] = y1 * sp + z * cp;
+    }
+
+    const L = [-0.35, 0.35, 0.87];
+    const order = [];
+    const shade = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      const a = i * 3, b = a + 1, c = a + 2;
+      const ux = px[b] - px[a], uy = py[b] - py[a], uz = pz[b] - pz[a];
+      const vx = px[c] - px[a], vy = py[c] - py[a], vz = pz[c] - pz[a];
+      let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+      if (nz <= 0) continue;  // backface
+      const len = Math.hypot(nx, ny, nz) || 1;
+      nx /= len; ny /= len; nz /= len;
+      // darken below the top surface so pockets read as recessed
+      const zAvg = (pos[i * 9 + 2] + pos[i * 9 + 5] + pos[i * 9 + 8]) / 3;
+      const depthFade = 0.72 + 0.28 * Math.max(0, Math.min(1, zAvg / pv.halfH * 0.5 + 0.5));
+      shade[i] = (0.35 + 0.65 * Math.max(0, nx * L[0] + ny * L[1] + nz * L[2])) * depthFade;
+      order.push(i);
+    }
+    order.sort((i, j) => (pz[i * 3] + pz[i * 3 + 1] + pz[i * 3 + 2])
+                       - (pz[j * 3] + pz[j * 3 + 1] + pz[j * 3 + 2]));
+
+    const ox = w / 2, oy = h / 2;
+    for (const i of order) {
+      const a = i * 3, b = a + 1, c = a + 2;
+      const s = shade[i];
+      const col = `rgb(${Math.round(96 + 120 * s)},${Math.round(104 + 116 * s)},${Math.round(120 + 110 * s)})`;
+      ctx.beginPath();
+      ctx.moveTo(ox + px[a] * scale, oy - py[a] * scale);
+      ctx.lineTo(ox + px[b] * scale, oy - py[b] * scale);
+      ctx.lineTo(ox + px[c] * scale, oy - py[c] * scale);
+      ctx.closePath();
+      ctx.fillStyle = col;
+      ctx.strokeStyle = col;   // seals antialiasing seams between triangles
+      ctx.lineWidth = 1;
+      ctx.fill();
+      ctx.stroke();
+    }
+  }
+
+  let orbit = null;
+  pvCanvas.addEventListener('pointerdown', e => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    orbit = { x: e.clientX, y: e.clientY, yaw: pv.yaw, pitch: pv.pitch };
+    pvCanvas.classList.add('orbiting');
+    try { pvCanvas.setPointerCapture(e.pointerId); } catch (_) {}
+  });
+  pvCanvas.addEventListener('pointermove', e => {
+    if (!orbit) return;
+    pv.yaw = orbit.yaw + (e.clientX - orbit.x) * 0.01;
+    pv.pitch = Math.max(0.05, Math.min(1.55,
+      orbit.pitch + (e.clientY - orbit.y) * 0.01));
+    pvRender();
+  });
+  ['pointerup', 'pointercancel'].forEach(ev => pvCanvas.addEventListener(ev, () => {
+    orbit = null;
+    pvCanvas.classList.remove('orbiting');
+  }));
+  pvCanvas.addEventListener('wheel', e => {
+    e.preventDefault();
+    pv.zoom = Math.max(0.3, Math.min(8, pv.zoom * (e.deltaY < 0 ? 1.15 : 1 / 1.15)));
+    pvRender();
+  }, { passive: false });
+  window.addEventListener('resize', () => { if (!previewEl.hidden) pvRender(); });
+
+  $('pv-close').addEventListener('click', () => { previewEl.hidden = true; });
+  $('btn-preview').addEventListener('click', () => {
+    if (!pv.buffer) return;
+    previewEl.hidden = false;
+    pvRender();
+  });
+
   // ---------- case / insert generation (server-side booleans) ----------
   const caseNote = $('case-note');
   async function generateCase(mode) {
@@ -966,6 +1290,10 @@
       a.href = data.file_url;
       a.download = '';
       a.click();
+      if (mode !== 'offset-dxf') {
+        const buf = await fetch(data.file_url).then(r => r.arrayBuffer());
+        showPreview(buf);
+      }
     } catch (err) {
       caseNote.textContent = 'Could not reach the measurement server.';
     } finally {

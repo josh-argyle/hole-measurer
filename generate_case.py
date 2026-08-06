@@ -32,7 +32,7 @@ import struct
 import sys
 
 import numpy as np
-from manifold3d import CrossSection, FillRule, JoinType, Manifold
+from manifold3d import CrossSection, FillRule, JoinType, Manifold, OpType
 
 # Gridfinity spec: 42 mm grid, 7 mm height unit, 0.5 mm bin clearance.
 # Base profile per cell, bottom up: 0.8 mm 45-degree chamfer, 1.8 mm
@@ -116,44 +116,80 @@ def hex_lattice(w, h, pitch=12.0, rib=1.0):
     return sum(cells[1:], cells[0])
 
 
+def _sweep_profile(cs, profile_2d):
+    """
+    Sweep a convex 2D profile (in the (outward, z) plane) along every
+    boundary of a CrossSection: one convex hull per boundary edge plus one
+    per corner. Gives a genuinely smooth swept surface - no stacked steps.
+
+    profile_2d: list of (s, z) points; s > 0 is outward from the boundary.
+    Returns a single Manifold, or None if the boundary was degenerate.
+    """
+    prof = np.asarray(profile_2d, dtype=np.float64)
+    solids = []
+    for poly in cs.simplify(0.02).to_polygons():
+        P = np.asarray(poly, dtype=np.float64)
+        keep = np.linalg.norm(P - np.roll(P, 1, axis=0), axis=1) > 1e-6
+        P = P[keep]
+        n = len(P)
+        if n < 3:
+            continue
+
+        def disk(p, m):
+            """Profile polygon placed at boundary point p, outward normal m"""
+            return np.column_stack([p[0] + m[0] * prof[:, 0],
+                                    p[1] + m[1] * prof[:, 0],
+                                    prof[:, 1]])
+
+        normals = []
+        for i in range(n):
+            e = P[(i + 1) % n] - P[i]
+            length = np.linalg.norm(e)
+            # Positive-area loops are CCW, so (ey, -ex) points outward
+            normals.append(np.array([e[1], -e[0]]) / length if length > 1e-9
+                           else None)
+        for i in range(n):
+            if normals[i] is None:
+                continue
+            j = (i + 1) % n
+            a = disk(P[i], normals[i])
+            b = disk(P[j], normals[i])
+            solids.append(Manifold.hull_points(np.vstack([a, b]).tolist()))
+            if normals[j] is not None:
+                c = disk(P[j], normals[j])
+                solids.append(Manifold.hull_points(np.vstack([b, c]).tolist()))
+    if not solids:
+        return None
+    return Manifold.batch_boolean(solids, OpType.Add)
+
+
 def lip_cutter(cs, z_top, r):
     """
-    Roundover cutter for a pocket opening: stacked, shrinking offsets
-    approximating a quarter-round lead-in. 0.1mm steps - finer than a
-    print layer, so it slices identically to a true round surface.
+    Roundover cutter for a pocket opening: a quarter-round lead-in swept
+    along the boundary, tangent to the wall and the top face.
     """
-    n = min(30, max(6, int(np.ceil(r / 0.1))))
-    parts = []
-    for k in range(1, n + 1):
-        d_lo = r * (k - 1) / n
-        d_hi = r * k / n
-        e = r - np.sqrt(max(r * r - (r - d_lo) ** 2, 0.0))
-        parts.append(slab(cs.offset(e, JoinType.Round, circular_segments=16),
-                          z_top - d_hi, z_top + 1))
-    return sum(parts[1:], parts[0])
+    arc = 14
+    prof = [(0.0, z_top + 1), (r, z_top + 1)]
+    for k in range(arc + 1):
+        d = r * k / arc
+        s = r - np.sqrt(max(r * r - (r - d) ** 2, 0.0))
+        prof.append((s, z_top - d))
+    return _sweep_profile(cs, prof)
 
 
 def floor_fillet(cs, z_floor, r):
     """
-    Concave fillet where the pocket wall meets the pocket floor: stacked
-    rings inscribing a quarter-round, 0.1mm steps (finer than a print
-    layer). Returns a Manifold or None.
+    Concave fillet where the pocket wall meets the pocket floor: a
+    quarter-round swept along the boundary, tangent to wall and floor.
+    Returns a Manifold or None.
     """
-    n = min(30, max(6, int(np.ceil(r / 0.1))))
-    parts = []
-    for k in range(1, n + 1):
-        h_lo = r * (k - 1) / n
-        h_hi = r * k / n
-        a = r - np.sqrt(max(r * r - (r - h_hi) ** 2, 0.0))
-        if a <= 0:
-            continue
-        ring = cs - cs.offset(-a, JoinType.Round, circular_segments=16)
-        if ring.area() <= 0:
-            continue
-        parts.append(slab(ring, z_floor + h_lo, z_floor + h_hi))
-    if not parts:
-        return None
-    return sum(parts[1:], parts[0])
+    arc = 14
+    prof = [(0.0, z_floor)]
+    for k in range(arc + 1):
+        h = r * k / arc
+        a = r - np.sqrt(max(r * r - (r - h) ** 2, 0.0))
+        prof.append((-a, z_floor + h))
+    return _sweep_profile(cs, prof)
 
 
 def outlines_to_cross_section(objects, px_per_mm, clearance):
@@ -320,8 +356,10 @@ def main():
         # Don't break through the deck or the pocket walls into the cavity
         lip_eff = min(lip_eff, wall, max(0.0, floor - 0.2))
     if lip_eff > 0.1:
-        solid = solid - lip_cutter(pockets, pocket_top, lip_eff)
-        info['lip_mm'] = round(lip_eff, 2)
+        cutter = lip_cutter(pockets, pocket_top, lip_eff)
+        if cutter is not None:
+            solid = solid - cutter
+            info['lip_mm'] = round(lip_eff, 2)
     fillet_eff = min(fillet, depth / 2)
     if fillet_eff > 0.1:
         ring = floor_fillet(pockets, pocket_floor, fillet_eff)

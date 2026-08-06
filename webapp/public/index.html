@@ -162,6 +162,14 @@
   }
   .editor .node:hover { fill: var(--green); }
   .editor .node.dragging { cursor: grabbing; fill: var(--green); }
+  .editor.aligning, .editor.aligning .hitpath, .editor.aligning .node { cursor: crosshair; }
+  .editor .alignpt {
+    fill: var(--blue); stroke: #fff; stroke-width: 1.5; vector-effect: non-scaling-stroke;
+  }
+  .editor .alignline {
+    stroke: var(--blue); stroke-width: 1.5; stroke-dasharray: 4 4;
+    vector-effect: non-scaling-stroke;
+  }
 
   .busy {
     position: absolute; inset: 26px;
@@ -235,6 +243,8 @@
   }
   .tb-edit button:hover { border-color: var(--ink); }
   .tb-edit button:focus-visible { outline: 2px solid var(--blue); }
+  .tb-edit button.active { background: var(--blue); border-color: var(--blue); color: #fff; }
+  .tb-edit .actions { flex-wrap: wrap; }
 
   .tb-downloads { display: flex; gap: 8px; padding: 12px 14px; border-top: 1px solid var(--line); }
   .tb-downloads a {
@@ -321,6 +331,7 @@
             <polygon class="hitpath" id="hitpath"></polygon>
             <polygon class="outline" id="outline"></polygon>
             <g id="nodes"></g>
+            <g id="alignlayer"></g>
           </g>
         </svg>
       </span>
@@ -343,8 +354,11 @@
       </div>
       <div class="tb-edit" id="tb-edit" hidden>
         <span>Edit the outline: drag a node &middot; double-click a node to delete
-          &middot; click an edge to add one.</span>
+          &middot; click an edge to add one. Align view: pick two points that
+          should be level.</span>
         <span class="actions">
+          <button type="button" id="btn-align">Align view</button>
+          <button type="button" id="btn-resetview">Reset view</button>
           <button type="button" id="btn-reset">Reset outline</button>
           <button type="button" id="btn-new">New photo</button>
         </span>
@@ -516,8 +530,7 @@
     warpedImage.setAttribute('width', edit.w);
     warpedImage.setAttribute('height', edit.h);
     editorSvg.setAttribute('viewBox', `0 0 ${edit.w} ${edit.h}`);
-    view = { k: 1, tx: 0, ty: 0 };
-    applyView();
+    resetView();
     pick.hidden = true;
     windowEl.hidden = false;
     tbEdit.hidden = false;
@@ -530,46 +543,50 @@
     return pt.matrixTransform(editorSvg.getScreenCTM().inverse());
   }
 
-  // ---------- pan & zoom ----------
-  let view = { k: 1, tx: 0, ty: 0 };
+  // ---------- pan, zoom & rotation (view matrix: world -> viewBox) ----------
+  let viewM = new DOMMatrix();
 
+  function viewScale() { return Math.hypot(viewM.a, viewM.b); }
   function applyView() {
     worldEl.setAttribute('transform',
-      `translate(${view.tx} ${view.ty}) scale(${view.k})`);
+      `matrix(${viewM.a} ${viewM.b} ${viewM.c} ${viewM.d} ${viewM.e} ${viewM.f})`);
+    updateNodeSize();
   }
+  function resetView() { viewM = new DOMMatrix(); applyView(); }
   function worldPoint(evt) {
     const p = svgPoint(evt);
-    return { x: (p.x - view.tx) / view.k, y: (p.y - view.ty) / view.k };
+    const w = new DOMPoint(p.x, p.y).matrixTransform(viewM.inverse());
+    return { x: w.x, y: w.y };
   }
 
   editorSvg.addEventListener('wheel', e => {
     if (!edit) return;
     e.preventDefault();
-    const factor = e.deltaY < 0 ? 1.2 : 1 / 1.2;
-    const k = Math.min(20, Math.max(1, view.k * factor));
-    if (k === view.k) return;
+    const k = viewScale();
+    const target = Math.min(20, Math.max(1, k * (e.deltaY < 0 ? 1.2 : 1 / 1.2)));
+    const f = target / k;
+    if (f === 1) return;
     const p = svgPoint(e);
-    view.tx = p.x - (p.x - view.tx) * (k / view.k);
-    view.ty = p.y - (p.y - view.ty) * (k / view.k);
-    view.k = k;
-    if (k === 1) { view.tx = 0; view.ty = 0; }
+    viewM = new DOMMatrix()
+      .translateSelf(p.x, p.y).scaleSelf(f).translateSelf(-p.x, -p.y)
+      .multiplySelf(viewM);
     applyView();
-    updateNodeSize();
   }, { passive: false });
 
   let panning = null;
   editorSvg.addEventListener('pointerdown', e => {
     if (e.button !== 1 || !edit) return;   // middle button pans
     e.preventDefault();
-    panning = { x: e.clientX, y: e.clientY, tx: view.tx, ty: view.ty,
+    panning = { x: e.clientX, y: e.clientY, m: DOMMatrix.fromMatrix(viewM),
                 scale: editorSvg.getScreenCTM().a };
     editorSvg.classList.add('panning');
     editorSvg.setPointerCapture(e.pointerId);
   });
   editorSvg.addEventListener('pointermove', e => {
     if (!panning) return;
-    view.tx = panning.tx + (e.clientX - panning.x) / panning.scale;
-    view.ty = panning.ty + (e.clientY - panning.y) / panning.scale;
+    const dx = (e.clientX - panning.x) / panning.scale;
+    const dy = (e.clientY - panning.y) / panning.scale;
+    viewM = new DOMMatrix().translateSelf(dx, dy).multiplySelf(panning.m);
     applyView();
   });
   ['pointerup', 'pointercancel'].forEach(ev => editorSvg.addEventListener(ev, () => {
@@ -580,11 +597,78 @@
   editorSvg.addEventListener('auxclick', e => { if (e.button === 1) e.preventDefault(); });
 
   function updateNodeSize() {
-    const r = 8 / view.k;
+    const r = 8 / viewScale();
     nodesEl.querySelectorAll('.node').forEach(c => c.setAttribute('r', r));
+    alignLayer.querySelectorAll('.alignpt').forEach(c => c.setAttribute('r', 6 / viewScale()));
   }
 
-  function render() {
+  // ---------- align view: pick two points, rotate so they sit level ----------
+  const alignLayer = $('alignlayer');
+  const btnAlign = $('btn-align');
+  let alignMode = false, alignPts = [];
+
+  function setAlignMode(on) {
+    alignMode = on;
+    alignPts = [];
+    alignLayer.textContent = '';
+    btnAlign.classList.toggle('active', on);
+    editorSvg.classList.toggle('aligning', on);
+  }
+  btnAlign.addEventListener('click', () => { if (edit) setAlignMode(!alignMode); });
+  $('btn-resetview').addEventListener('click', resetView);
+
+  function drawAlignMarkers() {
+    alignLayer.textContent = '';
+    for (const [x, y] of alignPts) {
+      const c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      c.setAttribute('class', 'alignpt');
+      c.setAttribute('cx', x);
+      c.setAttribute('cy', y);
+      c.setAttribute('r', 6 / viewScale());
+      alignLayer.appendChild(c);
+    }
+  }
+
+  // capture phase so align clicks win over node/edge handlers
+  editorSvg.addEventListener('pointerdown', e => {
+    if (!alignMode || e.button !== 0 || !edit) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const p = worldPoint(e);
+    // snap to the nearest outline node if one is close
+    let pt = [p.x, p.y], best = 15 / viewScale();
+    for (const q of edit.pts) {
+      const d = Math.hypot(q[0] - p.x, q[1] - p.y);
+      if (d < best) { best = d; pt = [q[0], q[1]]; }
+    }
+    alignPts.push(pt);
+    drawAlignMarkers();
+    if (alignPts.length === 2) {
+      alignToPoints(alignPts[0], alignPts[1]);
+      setAlignMode(false);
+    }
+  }, { capture: true });
+
+  function alignToPoints(A, B) {
+    const a = new DOMPoint(A[0], A[1]).matrixTransform(viewM);
+    const b = new DOMPoint(B[0], B[1]).matrixTransform(viewM);
+    const ang = Math.atan2(b.y - a.y, b.x - a.x);
+    // rotate to whichever axis is closest: horizontal or vertical
+    let delta = null;
+    for (const t of [0, Math.PI / 2, Math.PI, -Math.PI / 2, -Math.PI]) {
+      let d = t - ang;
+      while (d > Math.PI) d -= 2 * Math.PI;
+      while (d < -Math.PI) d += 2 * Math.PI;
+      if (delta === null || Math.abs(d) < Math.abs(delta)) delta = d;
+    }
+    const cx = (a.x + b.x) / 2, cy = (a.y + b.y) / 2;
+    viewM = new DOMMatrix()
+      .translateSelf(cx, cy).rotateSelf(delta * 180 / Math.PI).translateSelf(-cx, -cy)
+      .multiplySelf(viewM);
+    applyView();
+  }
+
+  function renderShape() {
     const ptsStr = edit.pts.map(p => p.join(',')).join(' ');
     outlineEl.setAttribute('points', ptsStr);
     hitpathEl.setAttribute('points', ptsStr);
@@ -592,19 +676,6 @@
     const rect = minAreaRect(edit.pts);
     oboxEl.setAttribute('points', rect.corners.map(p => p.join(',')).join(' '));
 
-    // rebuild nodes
-    nodesEl.textContent = '';
-    edit.pts.forEach((p, i) => {
-      const c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-      c.setAttribute('class', 'node');
-      c.setAttribute('cx', p[0]);
-      c.setAttribute('cy', p[1]);
-      c.setAttribute('r', 8 / view.k);
-      c.dataset.i = i;
-      nodesEl.appendChild(c);
-    });
-
-    // measurements
     const lenMm = Math.max(rect.w, rect.h) / PX_PER_MM;
     const widMm = Math.min(rect.w, rect.h) / PX_PER_MM;
     tbBody.innerHTML =
@@ -614,47 +685,47 @@
       row('Area', (areaPx(edit.pts) / (PX_PER_MM * PX_PER_MM)).toFixed(1), 'mm&sup2;');
   }
 
-  // drag to move
-  let dragging = null;
+  function renderNodes() {
+    nodesEl.textContent = '';
+    edit.pts.forEach((p, i) => {
+      const c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      c.setAttribute('class', 'node');
+      c.setAttribute('cx', p[0]);
+      c.setAttribute('cy', p[1]);
+      c.setAttribute('r', 8 / viewScale());
+      c.dataset.i = i;
+      nodesEl.appendChild(c);
+    });
+  }
+
+  function render() { renderShape(); renderNodes(); }
+
+  // ---- node dragging ----
+  // The pointer is captured on the SVG (which persists) rather than the
+  // node circle, so fast movements and re-renders can't drop the drag.
+  let dragIdx = -1;
+
+  function startNodeDrag(i, e) {
+    dragIdx = i;
+    const c = nodesEl.children[i];
+    if (c) c.classList.add('dragging');
+    editorSvg.setPointerCapture(e.pointerId);
+  }
+
   nodesEl.addEventListener('pointerdown', e => {
     if (e.button !== 0) return;
     const t = e.target.closest('.node');
     if (!t) return;
     e.preventDefault();
     e.stopPropagation();
-    dragging = t;
-    t.classList.add('dragging');
-    t.setPointerCapture(e.pointerId);
+    startNodeDrag(+t.dataset.i, e);
   });
-  nodesEl.addEventListener('pointermove', e => {
-    if (!dragging) return;
-    const p = worldPoint(e);
-    const i = +dragging.dataset.i;
-    edit.pts[i] = [
-      Math.max(0, Math.min(edit.w, p.x)),
-      Math.max(0, Math.min(edit.h, p.y)),
-    ];
-    render();
-    dragging = nodesEl.querySelector(`[data-i="${i}"]`);
-    if (dragging) dragging.classList.add('dragging');
-  });
-  ['pointerup', 'pointercancel'].forEach(ev => nodesEl.addEventListener(ev, () => {
-    if (dragging) dragging.classList.remove('dragging');
-    dragging = null;
-  }));
 
-  // double-click node to delete
-  nodesEl.addEventListener('dblclick', e => {
-    const t = e.target.closest('.node');
-    if (!t) return;
+  // press on an edge: insert a node there and drag it in the same gesture
+  hitpathEl.addEventListener('pointerdown', e => {
+    if (e.button !== 0) return;
+    e.preventDefault();
     e.stopPropagation();
-    if (edit.pts.length <= 3) return;
-    edit.pts.splice(+t.dataset.i, 1);
-    render();
-  });
-
-  // click an edge to insert a node at that spot
-  hitpathEl.addEventListener('click', e => {
     const p = worldPoint(e);
     let bestI = 0, bestD = 1/0, bestPt = null;
     for (let i = 0; i < edit.pts.length; i++) {
@@ -667,6 +738,39 @@
       if (d < bestD) { bestD = d; bestI = i; bestPt = [qx, qy]; }
     }
     edit.pts.splice(bestI + 1, 0, bestPt);
+    render();
+    startNodeDrag(bestI + 1, e);
+  });
+
+  editorSvg.addEventListener('pointermove', e => {
+    if (dragIdx < 0) return;
+    const p = worldPoint(e);
+    edit.pts[dragIdx] = [
+      Math.max(0, Math.min(edit.w, p.x)),
+      Math.max(0, Math.min(edit.h, p.y)),
+    ];
+    const c = nodesEl.children[dragIdx];
+    if (c) {
+      c.setAttribute('cx', edit.pts[dragIdx][0]);
+      c.setAttribute('cy', edit.pts[dragIdx][1]);
+    }
+    renderShape();
+  });
+  ['pointerup', 'pointercancel'].forEach(ev => editorSvg.addEventListener(ev, () => {
+    if (dragIdx >= 0) {
+      const c = nodesEl.children[dragIdx];
+      if (c) c.classList.remove('dragging');
+      dragIdx = -1;
+    }
+  }));
+
+  // double-click node to delete
+  nodesEl.addEventListener('dblclick', e => {
+    const t = e.target.closest('.node');
+    if (!t) return;
+    e.stopPropagation();
+    if (edit.pts.length <= 3) return;
+    edit.pts.splice(+t.dataset.i, 1);
     render();
   });
 

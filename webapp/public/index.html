@@ -1232,7 +1232,8 @@
   pvCanvas.addEventListener('pointermove', e => {
     if (!orbit) return;
     pv.yaw = orbit.yaw + (e.clientX - orbit.x) * 0.01;
-    pv.pitch = Math.max(0.05, Math.min(1.55,
+    // full tumble: past 90 degrees shows the underside
+    pv.pitch = Math.max(-3.12, Math.min(3.12,
       orbit.pitch + (e.clientY - orbit.y) * 0.01));
     pvRender();
   });

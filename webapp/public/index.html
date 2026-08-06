@@ -484,6 +484,14 @@
           <label for="case-wall">Wall (mm)</label>
           <input type="number" id="case-wall" value="1.6" step="0.1" min="0.4">
         </div>
+        <div class="opt">
+          <label for="case-lip">Lip round (mm)</label>
+          <input type="number" id="case-lip" value="1" step="0.25" min="0">
+        </div>
+        <div class="opt">
+          <label for="case-fillet">Floor fillet (mm)</label>
+          <input type="number" id="case-fillet" value="1" step="0.25" min="0">
+        </div>
         <div class="opt-check">
           <input type="checkbox" id="case-hollow" checked>
           <label for="case-hollow">Hollow underside (lighter print)</label>
@@ -1301,6 +1309,8 @@
           margin_mm: parseFloat($('case-margin').value) || 0,
           wall_mm: parseFloat($('case-wall').value) || 1.6,
           hollow: $('case-hollow').checked,
+          lip_mm: parseFloat($('case-lip').value) || 0,
+          fillet_mm: parseFloat($('case-fillet').value) || 0,
         }),
       });
       const data = await resp.json();

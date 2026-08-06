@@ -18,7 +18,10 @@ Input JSON:
   "depth_mm":     15,     # pocket depth (or wall height for shell)
   "floor_mm":     2,      # material left under the pocket
   "margin_mm":    5,      # block border around the outlines
-  "wall_mm":      1.6     # shell wall thickness
+  "wall_mm":      1.6,    # shell / pocket wall thickness
+  "hollow":       false,  # open the underside, honeycomb ribs support decks
+  "lip_mm":       0,      # roundover radius on the pocket opening
+  "fillet_mm":    0       # fillet radius where pocket wall meets floor
 }
 
 Prints a single JSON line: {"ok": true, "out": "<path>", ...} or an error.
@@ -113,6 +116,44 @@ def hex_lattice(w, h, pitch=12.0, rib=1.0):
     return sum(cells[1:], cells[0])
 
 
+def lip_cutter(cs, z_top, r):
+    """
+    Roundover cutter for a pocket opening: stacked, shrinking offsets
+    approximating a quarter-round lead-in (steps ~one print layer).
+    """
+    n = max(3, int(np.ceil(r / 0.25)))
+    parts = []
+    for k in range(1, n + 1):
+        d_lo = r * (k - 1) / n
+        d_hi = r * k / n
+        e = r - np.sqrt(max(r * r - (r - d_lo) ** 2, 0.0))
+        parts.append(slab(cs.offset(e, JoinType.Round, circular_segments=16),
+                          z_top - d_hi, z_top + 1))
+    return sum(parts[1:], parts[0])
+
+
+def floor_fillet(cs, z_floor, r):
+    """
+    Concave fillet where the pocket wall meets the pocket floor: stacked
+    rings inscribing a quarter-round. Returns a Manifold or None.
+    """
+    n = max(3, int(np.ceil(r / 0.25)))
+    parts = []
+    for k in range(1, n + 1):
+        h_lo = r * (k - 1) / n
+        h_hi = r * k / n
+        a = r - np.sqrt(max(r * r - (r - h_hi) ** 2, 0.0))
+        if a <= 0:
+            continue
+        ring = cs - cs.offset(-a, JoinType.Round, circular_segments=16)
+        if ring.area() <= 0:
+            continue
+        parts.append(slab(ring, z_floor + h_lo, z_floor + h_hi))
+    if not parts:
+        return None
+    return sum(parts[1:], parts[0])
+
+
 def outlines_to_cross_section(objects, px_per_mm, clearance):
     """Convert px outlines to a single mm CrossSection, offset by the
     clearance. Y is flipped so the pocket matches the photo seen from
@@ -177,6 +218,8 @@ def main():
     margin = float(spec.get('margin_mm', 5))
     wall = float(spec.get('wall_mm', 1.6))
     hollow = bool(spec.get('hollow', False))
+    lip = max(0.0, float(spec.get('lip_mm', 0)))
+    fillet = max(0.0, float(spec.get('fillet_mm', 0)))
 
     pockets = outlines_to_cross_section(spec['objects'], px_per_mm, clearance)
     x0, y0, x1, y1 = pockets.bounds()
@@ -196,6 +239,7 @@ def main():
         base = slab(outer, 0, floor)
         walls = slab(outer - pockets, floor, floor + depth)
         solid = base + walls
+        pocket_top, pocket_floor = floor + depth, floor
         info['size_mm'] = [round(content_w + 2 * wall, 1),
                           round(content_h + 2 * wall, 1),
                           round(floor + depth, 1)]
@@ -217,6 +261,7 @@ def main():
         # Pocket cut straight down from the top face
         cut = slab(pockets, total_h - depth, total_h + 1)
         solid = solid - cut
+        pocket_top, pocket_floor = total_h, total_h - depth
         if hollow:
             guard = pockets.offset(wall, JoinType.Round, circular_segments=32)
             lattice = hex_lattice(body_w, body_h)
@@ -253,6 +298,7 @@ def main():
         block = slab(footprint, 0, total_h)
         cut = slab(pockets, floor, total_h + 1)
         solid = block - cut
+        pocket_top, pocket_floor = total_h, floor
         if hollow:
             guard = pockets.offset(wall, JoinType.Round, circular_segments=32)
             lattice = hex_lattice(block_w, block_h)
@@ -264,6 +310,22 @@ def main():
             if cavity.area() > 0 and total_h - floor > 0.4:
                 solid = solid - slab(cavity, -1, total_h - floor)
         info['size_mm'] = [round(block_w, 1), round(block_h, 1), round(total_h, 1)]
+
+    # Lip roundover around the pocket opening (eases dropping the tool in)
+    # and a concave fillet where the pocket wall meets the pocket floor.
+    lip_eff = min(lip, depth / 2)
+    if hollow:
+        # Don't break through the deck or the pocket walls into the cavity
+        lip_eff = min(lip_eff, wall, max(0.0, floor - 0.2))
+    if lip_eff > 0.1:
+        solid = solid - lip_cutter(pockets, pocket_top, lip_eff)
+        info['lip_mm'] = round(lip_eff, 2)
+    fillet_eff = min(fillet, depth / 2)
+    if fillet_eff > 0.1:
+        ring = floor_fillet(pockets, pocket_floor, fillet_eff)
+        if ring is not None:
+            solid = solid + ring
+            info['fillet_mm'] = round(fillet_eff, 2)
 
     if solid.volume() <= 0:
         print(json.dumps({'ok': False, 'error': 'Generated an empty solid - '

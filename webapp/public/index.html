@@ -353,7 +353,7 @@
         <div class="tb-empty">Waiting for a photo.</div>
       </div>
       <div class="tb-edit" id="tb-edit" hidden>
-        <span>Edit the outline: drag a node &middot; double-click a node to delete
+        <span>Edit the outline: drag a node &middot; shift-click a node to delete
           &middot; click an edge to add one. Align view: pick two points that
           should be level.</span>
         <span class="actions">
@@ -718,9 +718,8 @@
     if (!t) return;
     e.preventDefault();
     e.stopPropagation();
-    // second press of a double-click deletes (pointer capture during drags
-    // retargets real dblclick events away from the node, so detect it here)
-    if (e.detail >= 2) {
+    // shift-click deletes a node
+    if (e.shiftKey) {
       if (edit.pts.length > 3) {
         edit.pts.splice(+t.dataset.i, 1);
         render();

@@ -21,7 +21,10 @@ Input JSON:
   "wall_mm":      1.6,    # shell / pocket wall thickness
   "hollow":       false,  # open the underside, honeycomb ribs support decks
   "lip_mm":       0,      # roundover radius on the pocket opening
-  "fillet_mm":    0       # fillet radius where pocket wall meets floor
+  "fillet_mm":    0,      # fillet radius where pocket wall meets floor
+  "edge_mm":      0,      # roundover radius on the outer top edge
+  "corner_mm":    3       # plan-view corner radius (block mode;
+                          # gridfinity corners are fixed by the spec)
 }
 
 Prints a single JSON line: {"ok": true, "out": "<path>", ...} or an error.
@@ -192,6 +195,31 @@ def floor_fillet(cs, z_floor, r):
     return _sweep_profile(cs, prof)
 
 
+def edge_round(solid, footprint, z_top, r):
+    """
+    Roundover on the OUTER top edge of the case. The removed corner region
+    is concave, so it can't be hull-swept directly: cut the rim square,
+    then add back a swept quarter-round bead along the inset boundary.
+    """
+    inset = footprint.offset(-r, JoinType.Round, circular_segments=32)
+    if inset.area() <= 0:
+        return solid
+    # Rim cutter reaches 1mm beyond the outer surface: a cutter wall
+    # exactly coincident with the case wall leaves boolean slivers
+    rim = footprint.offset(1.0, JoinType.Round, circular_segments=32) - inset
+    if rim.area() > 0:
+        solid = solid - slab(rim, z_top - r, z_top + 1)
+    arc = 14
+    prof = [(r * np.sin(np.pi / 2 * k / arc),
+             z_top - r + r * np.cos(np.pi / 2 * k / arc))
+            for k in range(arc + 1)]
+    prof.append((0.0, z_top - r))
+    bead = _sweep_profile(inset, prof)
+    if bead is not None:
+        solid = solid + bead
+    return solid
+
+
 def outlines_to_cross_section(objects, px_per_mm, clearance):
     """Convert px outlines to a single mm CrossSection, offset by the
     clearance. Y is flipped so the pocket matches the photo seen from
@@ -258,6 +286,8 @@ def main():
     hollow = bool(spec.get('hollow', False))
     lip = max(0.0, float(spec.get('lip_mm', 0)))
     fillet = max(0.0, float(spec.get('fillet_mm', 0)))
+    edge = max(0.0, float(spec.get('edge_mm', 0)))
+    corner = max(0.0, float(spec.get('corner_mm', 3.0)))
 
     pockets = outlines_to_cross_section(spec['objects'], px_per_mm, clearance)
     x0, y0, x1, y1 = pockets.bounds()
@@ -278,6 +308,7 @@ def main():
         walls = slab(outer - pockets, floor, floor + depth)
         solid = base + walls
         pocket_top, pocket_floor = floor + depth, floor
+        edge_footprint, edge_max = outer, wall * 0.49
         info['size_mm'] = [round(content_w + 2 * wall, 1),
                           round(content_h + 2 * wall, 1),
                           round(floor + depth, 1)]
@@ -300,6 +331,7 @@ def main():
         cut = slab(pockets, total_h - depth, total_h + 1)
         solid = solid - cut
         pocket_top, pocket_floor = total_h, total_h - depth
+        edge_footprint, edge_max = footprint, margin
         if hollow:
             guard = pockets.offset(wall, JoinType.Round, circular_segments=32)
             lattice = hex_lattice(body_w, body_h)
@@ -332,11 +364,12 @@ def main():
         block_w = content_w + 2 * margin
         block_h = content_h + 2 * margin
         total_h = floor + depth
-        footprint = rounded_rect(block_w, block_h, min(3.0, margin))
+        footprint = rounded_rect(block_w, block_h, corner)
         block = slab(footprint, 0, total_h)
         cut = slab(pockets, floor, total_h + 1)
         solid = block - cut
         pocket_top, pocket_floor = total_h, floor
+        edge_footprint, edge_max = footprint, margin
         if hollow:
             guard = pockets.offset(wall, JoinType.Round, circular_segments=32)
             lattice = hex_lattice(block_w, block_h)
@@ -366,6 +399,16 @@ def main():
         if ring is not None:
             solid = solid + ring
             info['fillet_mm'] = round(fillet_eff, 2)
+
+    # Roundover on the case's outer top edge
+    edge_eff = min(edge, edge_max, pocket_top / 2)
+    if hollow and edge_eff > wall:
+        # Deeper than the outer wall is thick: the cut runs over the
+        # cavity, so it must stay shallower than the deck
+        edge_eff = min(edge_eff, max(0.0, floor - 0.2))
+    if edge_eff > 0.1:
+        solid = edge_round(solid, edge_footprint, pocket_top, edge_eff)
+        info['edge_mm'] = round(edge_eff, 2)
 
     if solid.volume() <= 0:
         print(json.dumps({'ok': False, 'error': 'Generated an empty solid - '

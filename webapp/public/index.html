@@ -492,6 +492,15 @@
           <label for="case-fillet">Floor fillet (mm)</label>
           <input type="number" id="case-fillet" value="1" step="0.25" min="0">
         </div>
+        <div class="opt">
+          <label for="case-edge">Edge round (mm)</label>
+          <input type="number" id="case-edge" value="1" step="0.25" min="0">
+        </div>
+        <div class="opt">
+          <label for="case-corner">Corner radius (mm)</label>
+          <input type="number" id="case-corner" value="3" step="0.5" min="0"
+                 title="Plain block only - gridfinity corners are fixed by the spec">
+        </div>
         <div class="opt-check">
           <input type="checkbox" id="case-hollow" checked>
           <label for="case-hollow">Hollow underside (lighter print)</label>
@@ -1311,6 +1320,8 @@
           hollow: $('case-hollow').checked,
           lip_mm: parseFloat($('case-lip').value) || 0,
           fillet_mm: parseFloat($('case-fillet').value) || 0,
+          edge_mm: parseFloat($('case-edge').value) || 0,
+          corner_mm: parseFloat($('case-corner').value) || 0,
         }),
       });
       const data = await resp.json();

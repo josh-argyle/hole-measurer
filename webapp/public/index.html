@@ -79,43 +79,35 @@
   @media (max-width: 900px) {
     body { height: auto; min-height: 100dvh; overflow: auto; }
     main { grid-template-columns: 1fr; }
-    .window { min-height: 300px; }
+    .window, .pick { min-height: 300px; }
   }
 
   /* ---------- viewer: styled as the physical frame ---------- */
   .frame {
     background: #111;
-    border: 0;
-    font: inherit;
-    text-align: inherit;
     border-radius: 6px;
     padding: 26px;               /* the black border of the printed frame */
-    cursor: pointer;
     transition: box-shadow 0.15s ease;
     flex: 1;
     display: flex;
     min-height: 0;
+    position: relative;
   }
-  .frame:focus-visible { outline: 3px solid var(--blue); outline-offset: 3px; }
   .frame.dragover { box-shadow: 0 0 0 3px var(--blue); }
-  .window {
+
+  .pick {
+    flex: 1;
+    border: 0;
+    font: inherit;
     background: #fff;
     border-radius: 3px;
-    flex: 1;
-    min-height: 0;
+    cursor: pointer;
     display: flex;
     align-items: center;
     justify-content: center;
-    position: relative;
-    overflow: hidden;
+    min-height: 0;
   }
-  .window img {
-    position: absolute;
-    inset: 0;
-    width: 100%;
-    height: 100%;
-    object-fit: contain;
-  }
+  .pick:focus-visible { outline: 3px solid var(--blue); outline-offset: -6px; }
   .placeholder { display: block; text-align: center; padding: 40px 24px; }
   .placeholder .cross {
     font-family: 'IBM Plex Mono', monospace;
@@ -134,13 +126,49 @@
     font-family: 'IBM Plex Mono', monospace;
     font-size: 0.75rem;
   }
-  .window .busy {
-    position: absolute; inset: 0;
+
+  .window {
+    background: #fff;
+    border-radius: 3px;
+    flex: 1;
+    min-height: 0;
+    position: relative;
+    overflow: hidden;
+  }
+  .window img, .window svg.editor {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+  }
+  .window img { object-fit: contain; }
+
+  /* editor overlay */
+  .editor { cursor: crosshair; }
+  .editor .outline {
+    fill: none; stroke: var(--green); stroke-width: 3; vector-effect: non-scaling-stroke;
+  }
+  .editor .hitpath {
+    fill: none; stroke: transparent; stroke-width: 14; cursor: copy;
+  }
+  .editor .obox {
+    fill: none; stroke: var(--blue); stroke-width: 1.5;
+    stroke-dasharray: 6 6; vector-effect: non-scaling-stroke;
+  }
+  .editor .node {
+    fill: #fff; stroke: var(--green); stroke-width: 2.5;
+    cursor: grab; vector-effect: non-scaling-stroke;
+  }
+  .editor .node:hover { fill: var(--green); }
+  .editor .node.dragging { cursor: grabbing; fill: var(--green); }
+
+  .busy {
+    position: absolute; inset: 26px;
+    border-radius: 3px;
     background: rgba(255,255,255,0.88);
     display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px;
     font-family: 'IBM Plex Mono', monospace; font-size: 0.85rem; color: var(--graphite);
   }
-  /* scanning line while measuring */
   .busy .scanline {
     width: 60%; height: 2px; background: var(--blue); position: relative; overflow: visible;
     animation: scan 1.6s ease-in-out infinite alternate;
@@ -192,12 +220,28 @@
   .tb-row .value small { font-weight: 400; color: var(--graphite); font-size: 0.75rem; }
   .tb-row.dim .value { color: var(--blue); font-size: 1.35rem; }
   .tb-empty { padding: 22px 14px; color: var(--graphite); font-size: 0.85rem; }
+
+  .tb-edit {
+    padding: 10px 14px; border-top: 1px solid var(--line);
+    font-size: 0.75rem; color: var(--graphite); line-height: 1.5;
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .tb-edit .actions { display: flex; gap: 8px; }
+  .tb-edit button {
+    font: inherit; font-size: 0.75rem;
+    border: 1px solid var(--line); background: #fff; color: var(--ink);
+    padding: 5px 10px; border-radius: 3px; cursor: pointer;
+  }
+  .tb-edit button:hover { border-color: var(--ink); }
+  .tb-edit button:focus-visible { outline: 2px solid var(--blue); }
+
   .tb-downloads { display: flex; gap: 8px; padding: 12px 14px; border-top: 1px solid var(--line); }
   .tb-downloads a {
     flex: 1; text-align: center; text-decoration: none;
     font-family: 'IBM Plex Sans Condensed', sans-serif; font-weight: 600;
     letter-spacing: 0.08em; font-size: 0.75rem; text-transform: uppercase;
     color: #fff; background: var(--blue); padding: 9px 0; border-radius: 3px;
+    cursor: pointer;
   }
   .tb-downloads a:hover { background: #1e3cb0; }
   .tb-downloads a:focus-visible { outline: 2px solid var(--ink); }
@@ -258,21 +302,29 @@
 
 <main>
   <div class="viewer">
-    <button type="button" class="frame" id="dropframe"
-            aria-label="Choose or drop a photo to measure">
-      <span class="window" id="window">
-        <span class="placeholder" id="placeholder">
+    <div class="frame" id="dropframe">
+      <button type="button" class="pick" id="pick"
+              aria-label="Choose or drop a photo to measure">
+        <span class="placeholder">
           <span class="cross">+</span>
           <span class="line"><strong>Drop a photo here</strong> or click to choose one.</span>
           <span class="line hint">object inside the black frame &middot; jpg / png</span>
         </span>
-        <img id="result-img" alt="Annotated measurement result" hidden>
-        <span class="busy" id="busy" hidden>
-          <span class="scanline"></span>
-          measuring&hellip;
-        </span>
+      </button>
+      <span class="window" id="window" hidden>
+        <img id="warped-img" alt="Calibrated top-down view of the frame">
+        <svg class="editor" id="editor" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
+          <polygon class="obox" id="obox"></polygon>
+          <polygon class="hitpath" id="hitpath"></polygon>
+          <polygon class="outline" id="outline"></polygon>
+          <g id="nodes"></g>
+        </svg>
       </span>
-    </button>
+      <span class="busy" id="busy" hidden>
+        <span class="scanline"></span>
+        measuring&hellip;
+      </span>
+    </div>
     <input type="file" id="file-input" accept="image/*">
   </div>
 
@@ -285,9 +337,17 @@
       <div id="tb-body">
         <div class="tb-empty">Waiting for a photo.</div>
       </div>
+      <div class="tb-edit" id="tb-edit" hidden>
+        <span>Edit the outline: drag a node &middot; double-click a node to delete
+          &middot; click an edge to add one.</span>
+        <span class="actions">
+          <button type="button" id="btn-reset">Reset outline</button>
+          <button type="button" id="btn-new">New photo</button>
+        </span>
+      </div>
       <div class="tb-downloads" id="tb-downloads" hidden>
-        <a id="dl-dxf" download>DXF for CAD</a>
-        <a id="dl-svg" download>SVG</a>
+        <a id="dl-dxf">DXF for CAD</a>
+        <a id="dl-svg">SVG</a>
       </div>
       <div class="tb-error" id="tb-error" hidden></div>
     </div>
@@ -332,50 +392,21 @@
 </footer>
 
 <script>
-  const dropframe = document.getElementById('dropframe');
-  const fileInput = document.getElementById('file-input');
-  const resultImg = document.getElementById('result-img');
-  const placeholder = document.getElementById('placeholder');
-  const busy = document.getElementById('busy');
-  const tbBody = document.getElementById('tb-body');
-  const tbError = document.getElementById('tb-error');
-  const tbFile = document.getElementById('tb-file');
-  const scaleNote = document.getElementById('scale-note');
+  const $ = id => document.getElementById(id);
+  const dropframe = $('dropframe'), pick = $('pick'), fileInput = $('file-input');
+  const windowEl = $('window'), warpedImg = $('warped-img'), busy = $('busy');
+  const editorSvg = $('editor'), outlineEl = $('outline'), hitpathEl = $('hitpath');
+  const oboxEl = $('obox'), nodesEl = $('nodes');
+  const tbBody = $('tb-body'), tbError = $('tb-error'), tbFile = $('tb-file');
+  const tbEdit = $('tb-edit'), tbDownloads = $('tb-downloads'), scaleNote = $('scale-note');
 
-  dropframe.addEventListener('click', () => fileInput.click());
+  // ---------- upload plumbing ----------
+  let lastFile = null;
+
+  pick.addEventListener('click', () => fileInput.click());
   fileInput.addEventListener('change', () => {
     if (fileInput.files[0]) measure(fileInput.files[0]);
   });
-
-  // Smoothing slider: show the value live, re-measure the current photo
-  // when the user releases it
-  let lastFile = null;
-
-  // Both sliders use 0-10 steps mapped so every step is a visible change,
-  // with modest headroom at the top - max is slightly past the useful range.
-  // Smoothing: 0 = off, then strength grows geometrically 1.0 -> 10.
-  // Shadow cut: 0 = auto, then the contrast floor climbs 15 -> 95.
-  const smoothStrength = n => n === 0 ? 0 : Math.pow(10, (n - 1) / 9);
-  const shadowFloor = n => n === 0 ? 0 : Math.round(15 + (n - 1) * 80 / 9);
-
-  const smoothSlider = document.getElementById('opt-smooth');
-  const smoothVal = document.getElementById('smooth-val');
-  smoothSlider.addEventListener('input', () => {
-    smoothVal.textContent = smoothSlider.value === '0' ? 'off' : smoothSlider.value;
-  });
-  smoothSlider.addEventListener('change', () => {
-    if (lastFile) measure(lastFile);
-  });
-
-  const shadowSlider = document.getElementById('opt-shadow');
-  const shadowVal = document.getElementById('shadow-val');
-  shadowSlider.addEventListener('input', () => {
-    shadowVal.textContent = shadowSlider.value === '0' ? 'auto' : shadowSlider.value;
-  });
-  shadowSlider.addEventListener('change', () => {
-    if (lastFile) measure(lastFile);
-  });
-
   ['dragenter', 'dragover'].forEach(ev => dropframe.addEventListener(ev, e => {
     e.preventDefault(); dropframe.classList.add('dragover');
   }));
@@ -387,6 +418,237 @@
     if (f) measure(f);
   });
 
+  // Sliders: 0-10 steps with modest headroom past the useful range.
+  const smoothStrength = n => n === 0 ? 0 : Math.pow(10, (n - 1) / 9);
+  const shadowFloor = n => n === 0 ? 0 : Math.round(15 + (n - 1) * 80 / 9);
+
+  const smoothSlider = $('opt-smooth'), smoothVal = $('smooth-val');
+  smoothSlider.addEventListener('input', () => {
+    smoothVal.textContent = smoothSlider.value === '0' ? 'off' : smoothSlider.value;
+  });
+  smoothSlider.addEventListener('change', () => { if (lastFile) measure(lastFile); });
+
+  const shadowSlider = $('opt-shadow'), shadowVal = $('shadow-val');
+  shadowSlider.addEventListener('input', () => {
+    shadowVal.textContent = shadowSlider.value === '0' ? 'auto' : shadowSlider.value;
+  });
+  shadowSlider.addEventListener('change', () => { if (lastFile) measure(lastFile); });
+
+  // ---------- geometry (all in warped px, 10 px per mm) ----------
+  const PX_PER_MM = 10;
+
+  function perimeterPx(pts) {
+    let p = 0;
+    for (let i = 0; i < pts.length; i++) {
+      const a = pts[i], b = pts[(i + 1) % pts.length];
+      p += Math.hypot(b[0] - a[0], b[1] - a[1]);
+    }
+    return p;
+  }
+  function areaPx(pts) {
+    let s = 0;
+    for (let i = 0; i < pts.length; i++) {
+      const a = pts[i], b = pts[(i + 1) % pts.length];
+      s += a[0] * b[1] - b[0] * a[1];
+    }
+    return Math.abs(s) / 2;
+  }
+  function convexHull(pts) {
+    const p = [...pts].sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+    const cross = (o, a, b) => (a[0]-o[0])*(b[1]-o[1]) - (a[1]-o[1])*(b[0]-o[0]);
+    const build = list => {
+      const h = [];
+      for (const pt of list) {
+        while (h.length >= 2 && cross(h[h.length-2], h[h.length-1], pt) <= 0) h.pop();
+        h.push(pt);
+      }
+      h.pop();
+      return h;
+    };
+    return build(p).concat(build(p.slice().reverse()));
+  }
+  // Rotating calipers: smallest rectangle at any angle
+  function minAreaRect(pts) {
+    const h = convexHull(pts);
+    if (h.length < 3) {
+      const xs = pts.map(p => p[0]), ys = pts.map(p => p[1]);
+      const x0 = Math.min(...xs), x1 = Math.max(...xs);
+      const y0 = Math.min(...ys), y1 = Math.max(...ys);
+      return { w: x1-x0, h: y1-y0, corners: [[x0,y0],[x1,y0],[x1,y1],[x0,y1]] };
+    }
+    let best = null;
+    for (let i = 0; i < h.length; i++) {
+      const a = h[i], b = h[(i + 1) % h.length];
+      const ang = Math.atan2(b[1]-a[1], b[0]-a[0]);
+      const c = Math.cos(-ang), s = Math.sin(-ang);
+      let minX = 1/0, maxX = -1/0, minY = 1/0, maxY = -1/0;
+      for (const p of h) {
+        const x = p[0]*c - p[1]*s, y = p[0]*s + p[1]*c;
+        if (x < minX) minX = x; if (x > maxX) maxX = x;
+        if (y < minY) minY = y; if (y > maxY) maxY = y;
+      }
+      const area = (maxX-minX) * (maxY-minY);
+      if (!best || area < best.area) best = { area, ang, minX, maxX, minY, maxY };
+    }
+    const { ang, minX, maxX, minY, maxY } = best;
+    const c = Math.cos(ang), s = Math.sin(ang);
+    const corners = [[minX,minY],[maxX,minY],[maxX,maxY],[minX,maxY]]
+      .map(([x,y]) => [x*c - y*s, x*s + y*c]);
+    return { w: maxX-minX, h: maxY-minY, corners };
+  }
+
+  // ---------- editor state ----------
+  let edit = null;  // { pts, orig, w, h, name }
+
+  function enterEditor(data, fileName) {
+    edit = {
+      pts: data.contour_px.map(p => [p[0], p[1]]),
+      orig: data.contour_px.map(p => [p[0], p[1]]),
+      w: data.warped_w,
+      h: data.warped_h,
+      name: fileName.replace(/\.[^.]+$/, ''),
+    };
+    warpedImg.src = data.warped_url + '?t=' + Date.now();
+    editorSvg.setAttribute('viewBox', `0 0 ${edit.w} ${edit.h}`);
+    pick.hidden = true;
+    windowEl.hidden = false;
+    tbEdit.hidden = false;
+    tbDownloads.hidden = false;
+    render();
+  }
+
+  function svgPoint(evt) {
+    const pt = new DOMPoint(evt.clientX, evt.clientY);
+    return pt.matrixTransform(editorSvg.getScreenCTM().inverse());
+  }
+
+  function render() {
+    const ptsStr = edit.pts.map(p => p.join(',')).join(' ');
+    outlineEl.setAttribute('points', ptsStr);
+    hitpathEl.setAttribute('points', ptsStr);
+
+    const rect = minAreaRect(edit.pts);
+    oboxEl.setAttribute('points', rect.corners.map(p => p.join(',')).join(' '));
+
+    // rebuild nodes
+    nodesEl.textContent = '';
+    edit.pts.forEach((p, i) => {
+      const c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      c.setAttribute('class', 'node');
+      c.setAttribute('cx', p[0]);
+      c.setAttribute('cy', p[1]);
+      c.setAttribute('r', 8);
+      c.dataset.i = i;
+      nodesEl.appendChild(c);
+    });
+
+    // measurements
+    const lenMm = Math.max(rect.w, rect.h) / PX_PER_MM;
+    const widMm = Math.min(rect.w, rect.h) / PX_PER_MM;
+    tbBody.innerHTML =
+      row('Length', lenMm.toFixed(2), 'mm', 'dim') +
+      row('Width', widMm.toFixed(2), 'mm', 'dim') +
+      row('Perimeter', (perimeterPx(edit.pts) / PX_PER_MM).toFixed(2), 'mm') +
+      row('Area', (areaPx(edit.pts) / (PX_PER_MM * PX_PER_MM)).toFixed(1), 'mm&sup2;');
+  }
+
+  // drag to move
+  let dragging = null;
+  nodesEl.addEventListener('pointerdown', e => {
+    const t = e.target.closest('.node');
+    if (!t) return;
+    e.preventDefault();
+    e.stopPropagation();
+    dragging = t;
+    t.classList.add('dragging');
+    t.setPointerCapture(e.pointerId);
+  });
+  nodesEl.addEventListener('pointermove', e => {
+    if (!dragging) return;
+    const p = svgPoint(e);
+    const i = +dragging.dataset.i;
+    edit.pts[i] = [
+      Math.max(0, Math.min(edit.w, p.x)),
+      Math.max(0, Math.min(edit.h, p.y)),
+    ];
+    render();
+    dragging = nodesEl.querySelector(`[data-i="${i}"]`);
+    if (dragging) dragging.classList.add('dragging');
+  });
+  ['pointerup', 'pointercancel'].forEach(ev => nodesEl.addEventListener(ev, () => {
+    if (dragging) dragging.classList.remove('dragging');
+    dragging = null;
+  }));
+
+  // double-click node to delete
+  nodesEl.addEventListener('dblclick', e => {
+    const t = e.target.closest('.node');
+    if (!t) return;
+    e.stopPropagation();
+    if (edit.pts.length <= 3) return;
+    edit.pts.splice(+t.dataset.i, 1);
+    render();
+  });
+
+  // click an edge to insert a node at that spot
+  hitpathEl.addEventListener('click', e => {
+    const p = svgPoint(e);
+    let bestI = 0, bestD = 1/0, bestPt = null;
+    for (let i = 0; i < edit.pts.length; i++) {
+      const a = edit.pts[i], b = edit.pts[(i + 1) % edit.pts.length];
+      const abx = b[0]-a[0], aby = b[1]-a[1];
+      const t = Math.max(0, Math.min(1,
+        ((p.x-a[0])*abx + (p.y-a[1])*aby) / (abx*abx + aby*aby || 1)));
+      const qx = a[0] + t*abx, qy = a[1] + t*aby;
+      const d = Math.hypot(p.x-qx, p.y-qy);
+      if (d < bestD) { bestD = d; bestI = i; bestPt = [qx, qy]; }
+    }
+    edit.pts.splice(bestI + 1, 0, bestPt);
+    render();
+  });
+
+  $('btn-reset').addEventListener('click', () => {
+    edit.pts = edit.orig.map(p => [p[0], p[1]]);
+    render();
+  });
+  $('btn-new').addEventListener('click', () => fileInput.click());
+
+  // ---------- downloads generated from the edited path ----------
+  function downloadBlob(text, name, type) {
+    const url = URL.createObjectURL(new Blob([text], { type }));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = name;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+  $('dl-dxf').addEventListener('click', () => {
+    if (!edit) return;
+    const lines = ['0','SECTION','2','ENTITIES','0','POLYLINE','8','0','66','1','70','1'];
+    for (const [x, y] of edit.pts) {
+      lines.push('0','VERTEX','8','0',
+        '10', (x / PX_PER_MM).toFixed(3),
+        '20', ((edit.h - y) / PX_PER_MM).toFixed(3));   // DXF is Y-up
+    }
+    lines.push('0','SEQEND','0','ENDSEC','0','EOF');
+    downloadBlob(lines.join('\n') + '\n', edit.name + '_outline.dxf', 'application/dxf');
+  });
+  $('dl-svg').addEventListener('click', () => {
+    if (!edit) return;
+    const xs = edit.pts.map(p => p[0] / PX_PER_MM);
+    const ys = edit.pts.map(p => p[1] / PX_PER_MM);
+    const x0 = Math.min(...xs), y0 = Math.min(...ys);
+    const w = Math.max(...xs) - x0, h = Math.max(...ys) - y0;
+    const d = 'M ' + xs.map((x, i) =>
+      `${(x - x0).toFixed(3)},${(ys[i] - y0).toFixed(3)}`).join(' L ') + ' Z';
+    downloadBlob(
+      `<svg xmlns="http://www.w3.org/2000/svg" width="${w.toFixed(2)}mm" `
+      + `height="${h.toFixed(2)}mm" viewBox="0 0 ${w.toFixed(3)} ${h.toFixed(3)}">\n`
+      + `  <path d="${d}" fill="none" stroke="black" stroke-width="0.2"/>\n</svg>\n`,
+      edit.name + '_outline.svg', 'image/svg+xml');
+  });
+
+  // ---------- measurement request ----------
   function row(label, value, unit, cls = '') {
     return `<div class="tb-row ${cls}">
       <span class="label">${label}</span>
@@ -402,9 +664,9 @@
 
     const form = new FormData();
     form.append('photo', file);
-    form.append('width', document.getElementById('opt-width').value);
-    form.append('height', document.getElementById('opt-height').value);
-    form.append('convexHull', document.getElementById('opt-hull').checked);
+    form.append('width', $('opt-width').value);
+    form.append('height', $('opt-height').value);
+    form.append('convexHull', $('opt-hull').checked);
     form.append('smooth', smoothStrength(parseInt(smoothSlider.value)).toFixed(2));
     form.append('minContrast', String(shadowFloor(parseInt(shadowSlider.value))));
 
@@ -419,25 +681,8 @@
         return;
       }
 
-      resultImg.src = data.image_url + '?t=' + Date.now();
-      resultImg.hidden = false;
-      placeholder.hidden = true;
-
-      tbBody.innerHTML =
-        row('Length', data.length_mm.toFixed(2), 'mm', 'dim') +
-        row('Width', data.width_mm.toFixed(2), 'mm', 'dim') +
-        row('Perimeter', data.perimeter_mm.toFixed(2), 'mm') +
-        row('Area', data.area_mm2.toFixed(1), 'mm&sup2;');
       scaleNote.textContent = 'scale ' + data.mm_per_pixel.toFixed(4) + ' mm/px';
-
-      const downloads = document.getElementById('tb-downloads');
-      if (data.dxf_url) {
-        document.getElementById('dl-dxf').href = data.dxf_url;
-        document.getElementById('dl-svg').href = data.svg_url;
-        downloads.hidden = false;
-      } else {
-        downloads.hidden = true;
-      }
+      enterEditor(data, file.name);
     } catch (err) {
       busy.hidden = true;
       tbError.textContent = 'Could not reach the measurement server. '

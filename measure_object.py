@@ -1042,6 +1042,10 @@ def main():
         dxf_path, svg_path = export_outline(measurements, warped.shape[0], base)
         print(f"Saved CAD outline to: {dxf_path} and {svg_path}")
 
+        # Clean warped view (no annotations) for the web editor overlay
+        warped_path = str(base) + '_warped.png'
+        cv2.imwrite(warped_path, warped)
+
     if args.json:
         import json
         if "error" in measurements:
@@ -1057,6 +1061,10 @@ def main():
                 "output_image": str(out_path),
                 "dxf": dxf_path,
                 "svg": svg_path,
+                "warped_image": warped_path,
+                "warped_w": warped.shape[1],
+                "warped_h": warped.shape[0],
+                "contour_px": measurements['contour'].reshape(-1, 2).tolist(),
             }
         print(json.dumps(payload))
 

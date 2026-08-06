@@ -90,6 +90,10 @@ app.post('/api/measure', upload.single('photo'), (req, res) => {
       result.svg_url = '/output/' + path.basename(result.svg);
       delete result.svg;
     }
+    if (result.warped_image) {
+      result.warped_url = '/output/' + path.basename(result.warped_image);
+      delete result.warped_image;
+    }
     res.json(result);
   });
 });
